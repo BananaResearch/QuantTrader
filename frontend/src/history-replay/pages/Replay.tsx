@@ -1,13 +1,28 @@
 import { AppLayout } from '@/common/components'
-import { History } from 'lucide-react'
+import { ReplayConfig } from '../components/ReplayConfig'
+import { ReplayChart } from '../components/ReplayChart'
+import { MetricsPanel } from '../components/MetricsPanel'
+import { EquityCurve } from '../components/EquityCurve'
+import { TradeLog } from '../components/TradeLog'
 
 export default function Replay() {
   return (
     <AppLayout>
-      <div className="flex flex-col items-center justify-center h-full text-on-surface-variant">
-        <History className="w-12 h-12 mb-4 opacity-30" />
-        <h2 className="text-lg font-semibold mb-2 text-on-surface">历史回放</h2>
-        <p className="text-sm">该模块正在开发中</p>
+      <div className="h-full overflow-y-auto p-6 space-y-4">
+        {/* 顶部：回测配置栏 */}
+        <ReplayConfig />
+
+        {/* 中部：K线图 + 指标面板 */}
+        <div className="grid grid-cols-[1fr_240px] gap-4">
+          <ReplayChart />
+          <MetricsPanel />
+        </div>
+
+        {/* 资金曲线 */}
+        <EquityCurve />
+
+        {/* 交易记录表 */}
+        <TradeLog />
       </div>
     </AppLayout>
   )
