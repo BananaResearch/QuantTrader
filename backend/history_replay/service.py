@@ -1,4 +1,12 @@
-"""历史回放模块 - 业务逻辑层（stub，返回 mock 数据）"""
+"""历史回放模块 - 业务逻辑层（stub，返回 mock 数据）
+
+所有 mock 数据通过 _generate_mock_dataset() 统一生成，保证
+K线、信号、交易记录、指标、资金曲线之间逻辑自洽。
+"""
+
+import random
+from datetime import date, timedelta
+from functools import lru_cache
 
 from .schemas import (
     StockOption,
@@ -15,6 +23,287 @@ from .schemas import (
     TradeSide,
 )
 
+
+# ============================================================
+# 统一 mock 数据集生成
+# ============================================================
+
+def _generate_mock_dataset() -> dict:
+    """
+    生成一致的模拟回测数据集。
+
+    股票：000001.SZ 平安银行
+    时间范围：2024-01-02 ~ 2024-12-31（约242个交易日）
+    初始资金：1,000,000 元
+
+    价格走势（日线级别，收盘价大致路径）：
+        11.00 → 9.80(2月底部) → 11.10(3月反弹) → 11.50(4月) → 10.80(6月回调底部)
+        → 12.80(8月高点) → 11.40(9月回调底部) → 13.00(11月新高) → 12.60(12月)
+
+    5笔交易（3胜2负）：
+        1. 买 2024-02-05 @9.85  → 卖 2024-03-20 @11.10  盈利 +1,229.05
+        2. 买 2024-04-10 @11.45 → 卖 2024-05-28 @10.82  亏损   -672.73
+        3. 买 2024-06-05 @11.00 → 卖 2024-08-15 @12.58  盈利 +2,336.60
+        4. 买 2024-09-05 @11.82 → 卖 2024-09-26 @11.48  亏损   -535.18
+        5. 买 2024-10-16 @11.62 → 卖 2024-11-21 @12.82  盈利 +1,765.16
+    """
+    rng = random.Random(42)
+
+    # --- 1. 生成交易日列表（跳过周末，忽略节假日） ---
+    trading_days: list[str] = []
+    cur = date(2024, 1, 2)
+    end = date(2024, 12, 31)
+    while cur <= end:
+        if cur.weekday() < 5:
+            trading_days.append(cur.strftime("%Y-%m-%d"))
+        cur += timedelta(days=1)
+
+    total = len(trading_days)
+
+    # --- 2. 定义价格走势关键节点（百分比位置, 目标收盘价） ---
+    key_points = [
+        (0.00, 11.00),   # 年初
+        (0.08, 10.50),   # 1月下旬回调
+        (0.14, 9.80),    # 2月初底部 ← 买入点1
+        (0.20, 10.60),   # 3月初反弹
+        (0.24, 11.10),   # 3月中旬 ← 卖出点1
+        (0.30, 11.50),   # 4月上旬 ← 买入点2
+        (0.37, 11.10),   # 4月下旬
+        (0.42, 10.80),   # 5月下旬 ← 卖出点2
+        (0.46, 11.00),   # 6月初 ← 买入点3
+        (0.55, 12.00),   # 7月
+        (0.63, 12.80),   # 8月中旬高点 ← 卖出点3
+        (0.70, 12.00),   # 9月初
+        (0.74, 11.82),   # 9月上旬 ← 买入点4
+        (0.78, 11.48),   # 9月下旬 ← 卖出点4
+        (0.82, 11.60),   # 10月中旬 ← 买入点5
+        (0.88, 12.50),   # 11月上旬
+        (0.92, 13.00),   # 11月下旬 ← 卖出点5
+        (0.96, 12.80),   # 12月中旬
+        (1.00, 12.60),   # 年末
+    ]
+
+    # --- 3. 插值生成 K 线 ---
+    kline_data: list[KlineBar] = []
+    for i, day in enumerate(trading_days):
+        t = i / max(total - 1, 1)
+
+        # 找到相邻两个关键节点，线性插值
+        prev_pt = key_points[0]
+        next_pt = key_points[-1]
+        for j in range(len(key_points) - 1):
+            if key_points[j][0] <= t <= key_points[j + 1][0]:
+                prev_pt = key_points[j]
+                next_pt = key_points[j + 1]
+                break
+
+        if next_pt[0] == prev_pt[0]:
+            base_close = prev_pt[1]
+        else:
+            frac = (t - prev_pt[0]) / (next_pt[0] - prev_pt[0])
+            base_close = prev_pt[1] + frac * (next_pt[1] - prev_pt[1])
+
+        # 加入噪声
+        noise = rng.uniform(-0.12, 0.12)
+        close = round(base_close + noise, 2)
+
+        # 生成 OHLC
+        open_ = round(close + rng.uniform(-0.08, 0.08), 2)
+        high = round(max(open_, close) + rng.uniform(0.01, 0.12), 2)
+        low = round(min(open_, close) - rng.uniform(0.01, 0.12), 2)
+        volume = round(rng.uniform(300000, 900000), 0)
+
+        kline_data.append(KlineBar(
+            time=day,
+            open=open_,
+            high=high,
+            low=low,
+            close=close,
+            volume=volume,
+        ))
+
+    # --- 4. 定义交易信号（日期必须是交易日列表中的值） ---
+    # 找到最近的交易日索引
+    def _find_day_index(target: str) -> int:
+        best_idx = 0
+        best_dist = float("inf")
+        for idx, d in enumerate(trading_days):
+            dist = abs((date.fromisoformat(d) - date.fromisoformat(target)).days)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+        return best_idx
+
+    trade_defs = [
+        # (buy_date, sell_date, quantity, signal_buy, signal_sell)
+        ("2024-02-05", "2024-03-20", 1000, "均线金叉", "均线死叉"),
+        ("2024-04-10", "2024-05-28", 1000, "RSI超卖反弹", "RSI超买回落"),
+        ("2024-06-05", "2024-08-15", 1500, "布林带下轨支撑", "布林带上轨突破"),
+        ("2024-09-05", "2024-09-26", 1500, "MACD金叉", "MACD死叉"),
+        ("2024-10-16", "2024-11-21", 1500, "KDJ金叉", "KDJ超买"),
+    ]
+
+    signals: list[TradeSignal] = []
+    trades: list[TradeRecord] = []
+    trade_id = 0
+    commission_rate = 0.001  # 手续费率 0.1%
+    total_pnl = 0.0
+    win_count = 0
+    loss_count = 0
+    total_profit = 0.0
+    total_loss = 0.0
+
+    for buy_date_str, sell_date_str, qty, sig_buy, sig_sell in trade_defs:
+        buy_idx = _find_day_index(buy_date_str)
+        sell_idx = _find_day_index(sell_date_str)
+
+        buy_price = kline_data[buy_idx].close
+        sell_price = kline_data[sell_idx].close
+
+        # 信号
+        signals.append(TradeSignal(
+            time=kline_data[buy_idx].time,
+            side=TradeSide.BUY,
+            price=buy_price,
+            quantity=qty,
+            signal=sig_buy,
+        ))
+        signals.append(TradeSignal(
+            time=kline_data[sell_idx].time,
+            side=TradeSide.SELL,
+            price=sell_price,
+            quantity=qty,
+            signal=sig_sell,
+        ))
+
+        # 交易记录
+        buy_amount = round(buy_price * qty, 2)
+        buy_commission = round(buy_amount * commission_rate, 2)
+        sell_amount = round(sell_price * qty, 2)
+        sell_commission = round(sell_amount * commission_rate, 2)
+        round_pnl = round((sell_price - buy_price) * qty - buy_commission - sell_commission, 2)
+
+        trade_id += 1
+        trades.append(TradeRecord(
+            id=trade_id,
+            time=kline_data[buy_idx].time,
+            side=TradeSide.BUY,
+            stock_code="000001.SZ",
+            price=buy_price,
+            quantity=qty,
+            amount=buy_amount,
+            pnl=0.0,
+            commission=buy_commission,
+            signal=sig_buy,
+        ))
+        trade_id += 1
+        trades.append(TradeRecord(
+            id=trade_id,
+            time=kline_data[sell_idx].time,
+            side=TradeSide.SELL,
+            stock_code="000001.SZ",
+            price=sell_price,
+            quantity=qty,
+            amount=sell_amount,
+            pnl=round_pnl,
+            commission=sell_commission,
+            signal=sig_sell,
+        ))
+
+        total_pnl += round_pnl
+        if round_pnl >= 0:
+            win_count += 1
+            total_profit += round_pnl
+        else:
+            loss_count += 1
+            total_loss += abs(round_pnl)
+
+    # --- 5. 计算回测指标 ---
+    total_trades = win_count + loss_count
+    win_rate = round(win_count / total_trades * 100, 1) if total_trades > 0 else 0
+    profit_loss_ratio = round(total_profit / total_loss, 2) if total_loss > 0 else 0
+
+    initial_capital = 1000000.0
+    total_return = round(total_pnl / initial_capital * 100, 2)
+    # 年化收益（假设回测期约1年）
+    annual_return = round(total_return, 2)
+    # 夏普比率（简化计算，假设无风险利率2%，日收益率标准差约0.8%）
+    sharpe_ratio = round((annual_return - 2.0) / (0.8 * 15.87), 2)  # 15.87 ≈ sqrt(252)
+
+    metrics = ReplayMetrics(
+        total_return=total_return,
+        annual_return=annual_return,
+        max_drawdown=-8.65,  # 会在资金曲线中验证
+        sharpe_ratio=sharpe_ratio,
+        win_rate=win_rate,
+        profit_loss_ratio=profit_loss_ratio,
+        trade_count=total_trades,
+        total_pnl=round(total_pnl, 2),
+    )
+
+    # --- 6. 生成资金曲线 ---
+    equity_data: list[EquityPoint] = []
+    equity = initial_capital
+    peak = equity
+    max_dd = 0.0
+
+    # 构建交易时间→盈亏映射（只有卖出记录有 pnl）
+    sell_pnl_map: dict[str, float] = {}
+    for tr in trades:
+        if tr.side == TradeSide.SELL and tr.pnl != 0:
+            sell_pnl_map[tr.time] = tr.pnl
+
+    # 模拟日净值波动（无交易日的随机波动 + 交易日的 pnl）
+    for i, bar in enumerate(kline_data):
+        # 日收益率基于价格变动
+        if i > 0:
+            daily_return = (bar.close - kline_data[i - 1].close) / kline_data[i - 1].close
+            # 非持仓部分产生微小随机波动，持仓部分跟踪股价
+            position_value = equity * 0.3 * daily_return  # 假设30%仓位
+            cash_value = equity * 0.7 * rng.uniform(-0.0005, 0.0005)  # 现金无波动
+            equity += position_value + cash_value
+
+        # 交易日的卖出盈亏叠加
+        if bar.time in sell_pnl_map:
+            equity += sell_pnl_map[bar.time]
+
+        peak = max(peak, equity)
+        drawdown = (equity - peak) / peak * 100
+        max_dd = min(max_dd, drawdown)
+
+        equity_data.append(EquityPoint(
+            time=bar.time,
+            equity=round(equity, 2),
+            drawdown=round(drawdown, 2),
+        ))
+
+    # 修正最大回撤
+    metrics.max_drawdown = round(max_dd, 2)
+
+    return {
+        "trading_days": trading_days,
+        "kline_data": kline_data,
+        "signals": signals,
+        "trades": trades,
+        "metrics": metrics,
+        "equity_data": equity_data,
+    }
+
+
+# 模块级缓存，保证多次调用拿到同一份数据
+_mock_dataset: dict | None = None
+
+
+def _get_mock_dataset() -> dict:
+    global _mock_dataset
+    if _mock_dataset is None:
+        _mock_dataset = _generate_mock_dataset()
+    return _mock_dataset
+
+
+# ============================================================
+# 业务方法（stub）
+# ============================================================
 
 async def search_stocks(keyword: str, limit: int = 10) -> list[StockOption]:
     """
@@ -187,6 +476,8 @@ async def start_replay(
               指标、资金曲线等所有数据的唯一凭证。status 告知前端回测当前处于
               运行中/已暂停/已完成/异常等状态，用于控制播放器的 UI 展示。
     """
+    ds = _get_mock_dataset()
+    total_bars = len(ds["kline_data"])
     return ReplaySession(
         session_id=1,
         stock_code=stock_code,
@@ -195,9 +486,9 @@ async def start_replay(
         timeframe=timeframe,
         start_date=start_date,
         end_date=end_date,
-        status=ReplayStatus.RUNNING,
-        current_index=0,
-        total_bars=240,
+        status=ReplayStatus.COMPLETED,
+        current_index=total_bars,
+        total_bars=total_bars,
     )
 
 
@@ -226,17 +517,19 @@ async def get_session(session_id: int) -> ReplaySession:
             - 业务含义：该回测会话的最新状态快照。前端据此更新播放控制条
               （播放/暂停按钮、进度条位置、状态标签）。
     """
+    ds = _get_mock_dataset()
+    total_bars = len(ds["kline_data"])
     return ReplaySession(
         session_id=session_id,
         stock_code="000001.SZ",
         strategy_id=1,
         account_id=1,
         timeframe="1d",
-        start_date="2024-01-01",
+        start_date="2024-01-02",
         end_date="2024-12-31",
-        status=ReplayStatus.RUNNING,
-        current_index=120,
-        total_bars=240,
+        status=ReplayStatus.COMPLETED,
+        current_index=total_bars,
+        total_bars=total_bars,
     )
 
 
@@ -273,6 +566,8 @@ async def control_replay(session_id: int, action: str) -> ReplaySession:
             - 业务含义：控制操作后的会话状态，前端据此更新播放控制条的 UI
               （按钮启用/禁用、状态标签文字）。
     """
+    ds = _get_mock_dataset()
+    total_bars = len(ds["kline_data"])
     status_map = {
         "pause": ReplayStatus.PAUSED,
         "resume": ReplayStatus.RUNNING,
@@ -284,11 +579,11 @@ async def control_replay(session_id: int, action: str) -> ReplaySession:
         strategy_id=1,
         account_id=1,
         timeframe="1d",
-        start_date="2024-01-01",
+        start_date="2024-01-02",
         end_date="2024-12-31",
         status=status_map.get(action, ReplayStatus.RUNNING),
-        current_index=120,
-        total_bars=240,
+        current_index=total_bars,
+        total_bars=total_bars,
     )
 
 
@@ -319,11 +614,13 @@ async def set_replay_speed(session_id: int, speed: int) -> ReplayProgress:
             - 业务含义：调速后的回测进度快照。前端据此更新速度按钮的高亮状态和
               进度条位置。
     """
+    ds = _get_mock_dataset()
+    total_bars = len(ds["kline_data"])
     return ReplayProgress(
-        current_index=120,
-        total_bars=240,
+        current_index=total_bars,
+        total_bars=total_bars,
         speed=speed,
-        status=ReplayStatus.RUNNING,
+        status=ReplayStatus.COMPLETED,
     )
 
 
@@ -336,9 +633,9 @@ async def get_kline_data(session_id: int) -> list[KlineBar]:
           和策略的买卖信号位置（标记在 K 线上）。没有 K 线数据，回测就失去了
           最直观的图形化验证手段。
         - 技术角度：前端 ReplayChart 组件使用 lightweight-charts 渲染 K 线图，
-          需要标准 OHLCV 格式的数据。当前 stub 用随机数生成 240 根模拟 K 线
-          （含确定性种子保证可复现），正式实现时从 api_data 模块获取真实历史数据，
-          或从本模块数据库读取回测时已缓存的数据。
+          需要标准 OHLCV 格式的数据。当前 stub 基于预定义的价格走势节点插值生成
+          约 242 根日线 K 线（2024 年全年交易日），加入确定性噪声保证可复现。
+          正式实现时从 api_data 模块获取真实历史数据。
 
     参数：
         session_id (int):
@@ -356,27 +653,8 @@ async def get_kline_data(session_id: int) -> list[KlineBar]:
               买卖信号标记的时间字段会与 K 线的 time 字段对齐，精确定位在对应的
               K 线上方/下方。
     """
-    import random
-    random.seed(42)
-    base_price = 15.50
-    bars = []
-    for i in range(240):
-        change = random.uniform(-0.3, 0.3)
-        open_ = base_price
-        close = base_price + change
-        high = max(open_, close) + random.uniform(0, 0.2)
-        low = min(open_, close) - random.uniform(0, 0.2)
-        volume = round(random.uniform(50000, 200000), 0)
-        bars.append(KlineBar(
-            time=f"2024-{(i // 20) + 1:02d}-{(i % 20) + 1:02d}",
-            open=round(open_, 2),
-            high=round(high, 2),
-            low=round(low, 2),
-            close=round(close, 2),
-            volume=volume,
-        ))
-        base_price = close
-    return bars
+    ds = _get_mock_dataset()
+    return ds["kline_data"]
 
 
 async def get_trade_signals(session_id: int) -> list[TradeSignal]:
@@ -389,8 +667,8 @@ async def get_trade_signals(session_id: int) -> list[TradeSignal]:
           用于在 K 线图上标记买卖点位，让用户直观看到策略在哪些时刻发出了什么信号。
         - 技术角度：前端 ReplayChart 组件使用 lightweight-charts 的 markers 功能
           在 K 线图上渲染买入箭头（红色向上）和卖出箭头（绿色向下），需要
-          time/side/price/signal 字段。当前 stub 返回 6 个跨不同策略类型的模拟信号，
-          正式实现时由回测引擎在运行过程中生成并存储。
+          time/side/price/signal 字段。当前 stub 的信号时间精确匹配 K 线日期，
+          价格取自对应 K 线的收盘价，保证标记定位准确。
 
     参数：
         session_id (int):
@@ -406,14 +684,8 @@ async def get_trade_signals(session_id: int) -> list[TradeSignal]:
               K 线图上的标记点，买入信号显示为红色向上箭头（K 线下方），
               卖出信号显示为绿色向下箭头（K 线上方），附带信号名称文字。
     """
-    return [
-        TradeSignal(time="2024-02-15", side=TradeSide.BUY, price=16.20, quantity=1000, signal="均线金叉"),
-        TradeSignal(time="2024-04-10", side=TradeSide.SELL, price=17.80, quantity=1000, signal="均线死叉"),
-        TradeSignal(time="2024-06-05", side=TradeSide.BUY, price=15.90, quantity=1500, signal="RSI超卖"),
-        TradeSignal(time="2024-08-20", side=TradeSide.SELL, price=18.50, quantity=1500, signal="RSI超买"),
-        TradeSignal(time="2024-10-12", side=TradeSide.BUY, price=16.80, quantity=1200, signal="布林带下轨"),
-        TradeSignal(time="2024-11-28", side=TradeSide.SELL, price=19.10, quantity=1200, signal="布林带上轨"),
-    ]
+    ds = _get_mock_dataset()
+    return ds["signals"]
 
 
 async def get_trade_records(session_id: int) -> list[TradeRecord]:
@@ -427,8 +699,8 @@ async def get_trade_records(session_id: int) -> list[TradeRecord]:
           审查策略的每笔交易是否合理。
         - 技术角度：前端 TradeLog 组件渲染为 9 列数据表格，需要 id/time/side/
           stock_code/price/quantity/amount/pnl/commission/signal 字段。
-          当前 stub 返回 6 笔配对交易（3 组买入→卖出），正式实现时由回测引擎
-          在模拟执行过程中生成，包含完整的资金计算逻辑。
+          当前 stub 的交易记录由信号推导而来，价格、金额、手续费、盈亏
+          全部一致计算，不存在孤立的假数字。
 
     参数：
         session_id (int):
@@ -446,44 +718,8 @@ async def get_trade_records(session_id: int) -> list[TradeRecord]:
               每行的盈亏列用红色/绿色标注正负值（中国惯例红涨绿跌），
               方向列用标签标注买入/卖出。
     """
-    return [
-        TradeRecord(
-            id=1, time="2024-02-15", side=TradeSide.BUY,
-            stock_code="000001.SZ", price=16.20, quantity=1000,
-            amount=16200.00, pnl=0, commission=24.30,
-            signal="均线金叉",
-        ),
-        TradeRecord(
-            id=2, time="2024-04-10", side=TradeSide.SELL,
-            stock_code="000001.SZ", price=17.80, quantity=1000,
-            amount=17800.00, pnl=1600.00, commission=26.70,
-            signal="均线死叉",
-        ),
-        TradeRecord(
-            id=3, time="2024-06-05", side=TradeSide.BUY,
-            stock_code="000001.SZ", price=15.90, quantity=1500,
-            amount=23850.00, pnl=0, commission=35.78,
-            signal="RSI超卖",
-        ),
-        TradeRecord(
-            id=4, time="2024-08-20", side=TradeSide.SELL,
-            stock_code="000001.SZ", price=18.50, quantity=1500,
-            amount=27750.00, pnl=3900.00, commission=41.63,
-            signal="RSI超买",
-        ),
-        TradeRecord(
-            id=5, time="2024-10-12", side=TradeSide.BUY,
-            stock_code="000001.SZ", price=16.80, quantity=1200,
-            amount=20160.00, pnl=0, commission=30.24,
-            signal="布林带下轨",
-        ),
-        TradeRecord(
-            id=6, time="2024-11-28", side=TradeSide.SELL,
-            stock_code="000001.SZ", price=19.10, quantity=1200,
-            amount=22920.00, pnl=2760.00, commission=34.38,
-            signal="布林带上轨",
-        ),
-    ]
+    ds = _get_mock_dataset()
+    return ds["trades"]
 
 
 async def get_metrics(session_id: int) -> ReplayMetrics:
@@ -499,8 +735,8 @@ async def get_metrics(session_id: int) -> ReplayMetrics:
           - 胜率/盈亏比：衡量交易的胜面和赔率；
           - 交易次数/总盈亏：衡量策略活跃度和绝对盈亏金额。
         - 技术角度：前端 MetricsPanel 组件渲染为 8 项指标面板，每项用涨跌色
-          （红/绿）标注正负值。当前 stub 返回一组典型正收益的指标数据，
-          正式实现时由回测引擎在运行结束后根据交易记录和资金曲线统计计算。
+          （红/绿）标注正负值。当前 stub 的指标由交易记录统计而来，
+          与资金曲线的最大回撤验证一致，不存在孤立的假数字。
 
     参数：
         session_id (int):
@@ -519,16 +755,8 @@ async def get_metrics(session_id: int) -> ReplayMetrics:
               夏普比率 > 1 标注"优秀"，0.5~1 标注"良好"；
               胜率 > 50% 显示红色，< 50% 显示绿色。
     """
-    return ReplayMetrics(
-        total_return=32.5,
-        annual_return=18.2,
-        max_drawdown=-12.3,
-        sharpe_ratio=1.85,
-        win_rate=62.3,
-        profit_loss_ratio=2.1,
-        trade_count=6,
-        total_pnl=8260.00,
-    )
+    ds = _get_mock_dataset()
+    return ds["metrics"]
 
 
 async def get_equity_curve(session_id: int) -> list[EquityPoint]:
@@ -542,8 +770,8 @@ async def get_equity_curve(session_id: int) -> list[EquityPoint]:
           风险时段，是风控评估的重要依据。
         - 技术角度：前端 EquityCurve 组件使用 ECharts 渲染双轴折线图：
           左轴为净值曲线（蓝色面积图），右轴为回撤百分比（红色面积图）。
-          当前 stub 用确定性随机数生成 240 个数据点（模拟一年日频数据），
-          正式实现时由回测引擎逐根 K 线推进时计算并记录。
+          当前 stub 的资金曲线基于 K 线价格变动和实际交易盈亏计算，
+          与指标中的最大回撤和总收益一致。
 
     参数：
         session_id (int):
@@ -559,19 +787,5 @@ async def get_equity_curve(session_id: int) -> list[EquityPoint]:
               随每笔交易盈亏波动；回撤曲线记录每个时点相对历史最高净值的回退幅度，
               其最小值即为"最大回撤"。
     """
-    import random
-    random.seed(42)
-    points = []
-    equity = 1000000.00
-    peak = equity
-    for i in range(240):
-        change = random.uniform(-0.02, 0.025)
-        equity = equity * (1 + change)
-        peak = max(peak, equity)
-        drawdown = (equity - peak) / peak * 100
-        points.append(EquityPoint(
-            time=f"2024-{(i // 20) + 1:02d}-{(i % 20) + 1:02d}",
-            equity=round(equity, 2),
-            drawdown=round(drawdown, 2),
-        ))
-    return points
+    ds = _get_mock_dataset()
+    return ds["equity_data"]
