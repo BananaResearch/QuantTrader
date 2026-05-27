@@ -30,7 +30,8 @@ export function ReplayConfig() {
       <div className="flex items-end gap-4 flex-wrap">
         {/* 股票代码搜索 */}
         <StockSearchInput
-          value={config.stockCode ? `${config.stockCode} ${config.stockName}` : ''}
+          value={config.stockCode}
+          stockName={config.stockName}
           onChange={(code, name) => config.setStockCode(code, name)}
           disabled={isRunning}
         />
@@ -128,10 +129,12 @@ export function ReplayConfig() {
 
 function StockSearchInput({
   value,
+  stockName,
   onChange,
   disabled,
 }: {
   value: string
+  stockName: string
   onChange: (code: string, name: string) => void
   disabled?: boolean
 }) {
@@ -173,7 +176,7 @@ function StockSearchInput({
   )
 
   const handleSelect = (stock: StockOption) => {
-    setKeyword('')
+    setKeyword(stock.code + ' ' + stock.name)
     setIsOpen(false)
     onChange(stock.code, stock.name)
   }
@@ -182,34 +185,37 @@ function StockSearchInput({
     <div className="relative" ref={wrapperRef}>
       <FieldLabel label="股票代码" />
       <div className="relative">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-on-surface-variant" />
-        {value ? (
-          <div className="h-9 pl-8 pr-3 flex items-center bg-surface-container rounded-md text-sm font-medium">
-            {value}
-            {!disabled && (
-              <button
-                onClick={() => onChange('', '')}
-                className="ml-2 text-on-surface-variant hover:text-on-surface text-xs"
-              >
-                ✕
-              </button>
-            )}
-          </div>
-        ) : (
-          <input
-            type="text"
-            value={keyword}
-            onChange={(e) => handleInput(e.target.value)}
-            onFocus={() => results.length > 0 && setIsOpen(true)}
-            placeholder="搜索代码/名称/拼音"
-            disabled={disabled}
-            className="h-9 w-52 pl-8 pr-3 bg-surface-container rounded-md text-sm placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40"
-          />
-        )}
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-on-surface-variant pointer-events-none" />
+        <input
+          type="text"
+          value={value ? value + ' ' + (stockName || '') : keyword}
+          onChange={(e) => {
+            if (value) {
+              // 已选中时，编辑意味着清除重选
+              onChange('', '')
+              setKeyword(e.target.value)
+            } else {
+              handleInput(e.target.value)
+            }
+          }}
+          onFocus={() => {
+            if (value) return
+            if (results.length > 0) setIsOpen(true)
+          }}
+          placeholder="搜索代码/名称/拼音"
+          disabled={disabled}
+          className={cn(
+            'h-9 w-52 pl-8 pr-3 bg-surface-container rounded-md text-sm placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40',
+            value && 'font-medium text-on-surface'
+          )}
+        />
       </div>
       {/* 搜索结果下拉 */}
       {isOpen && results.length > 0 && (
         <div className="absolute top-full left-0 mt-1 w-64 bg-surface-container-highest rounded-md shadow-float z-50 border border-outline-variant/20 overflow-hidden">
+          <div className="px-3 py-1.5 text-xs text-on-surface-variant border-b border-outline-variant/20">
+            点击选择股票
+          </div>
           {results.map((stock) => (
             <button
               key={stock.code}
