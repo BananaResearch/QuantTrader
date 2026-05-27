@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import {
   createChart,
   createSeriesMarkers,
@@ -11,7 +11,7 @@ import {
   type HistogramStyleOptions,
   ColorType,
 } from 'lightweight-charts'
-import { Play, Pause, Square, SkipForward } from 'lucide-react'
+import { Play, Pause, Square } from 'lucide-react'
 import { cn } from '@/common/utils'
 import { useReplayRuntime } from '../hooks/useReplay'
 import type { KlineBar, TradeSignal } from '../types'
@@ -28,12 +28,24 @@ export function ReplayChart() {
 
   const runtime = useReplayRuntime()
   const { klineData, signals, status, speed } = runtime
+  const hasData = klineData.length > 0
+  const [chartReady, setChartReady] = useState(false)
 
-  // 初始化图表
+  // 初始化图表（仅在 hasData 变为 true 且容器存在时）
   useEffect(() => {
-    if (!chartContainerRef.current) return
+    if (!hasData || !chartContainerRef.current) return
 
-    const chart = createChart(chartContainerRef.current, {
+    // 如果图表已存在，先销毁重建
+    if (chartRef.current) {
+      chartRef.current.remove()
+      chartRef.current = null
+      candleSeriesRef.current = null
+      volumeSeriesRef.current = null
+      markersRef.current = null
+    }
+
+    const container = chartContainerRef.current
+    const chart = createChart(container, {
       layout: {
         background: { type: ColorType.Solid, color: '#12121a' },
         textColor: '#9ca3af',
@@ -77,6 +89,7 @@ export function ReplayChart() {
     chartRef.current = chart
     candleSeriesRef.current = candleSeries
     volumeSeriesRef.current = volumeSeries
+    setChartReady(true)
 
     const handleResize = () => {
       if (chartContainerRef.current) {
@@ -95,12 +108,14 @@ export function ReplayChart() {
       chartRef.current = null
       candleSeriesRef.current = null
       volumeSeriesRef.current = null
+      markersRef.current = null
+      setChartReady(false)
     }
-  }, [])
+  }, [hasData])
 
   // 数据更新
   useEffect(() => {
-    if (!candleSeriesRef.current || !volumeSeriesRef.current || klineData.length === 0) return
+    if (!chartReady || !candleSeriesRef.current || !volumeSeriesRef.current || klineData.length === 0) return
 
     const candleData = klineData.map((bar: KlineBar) => ({
       time: bar.time,
@@ -137,7 +152,7 @@ export function ReplayChart() {
 
     // 自适应缩放
     chartRef.current?.timeScale().fitContent()
-  }, [klineData, signals])
+  }, [chartReady, klineData, signals])
 
   // 控制按钮
   const handlePlay = useCallback(() => {
@@ -159,13 +174,11 @@ export function ReplayChart() {
     [runtime]
   )
 
-  const hasData = klineData.length > 0
-
   return (
     <div className="bg-surface-container-high rounded-lg shadow-card overflow-hidden flex flex-col">
       {/* 图表区 */}
       <div className="relative flex-1 min-h-[380px]">
-        <div ref={chartContainerRef} className="absolute inset-0" />
+        {hasData && <div ref={chartContainerRef} className="absolute inset-0" />}
         {!hasData && (
           <div className="absolute inset-0 flex items-center justify-center text-on-surface-variant text-sm">
             配置参数后点击「开始回测」查看K线
@@ -179,92 +192,51 @@ export function ReplayChart() {
           {/* 播放/暂停 */}
           <button
             onClick={handlePlay}
-            disabled={status === 'completed' || status === 'idle'}
-            className={cn(
-              'p-1.5 rounded-md transition-colors',
-              'hover:bg-surface-container-high text-on-surface-variant',
-              'disabled:opacity-30 disabled:cursor-not-allowed'
-            )}
+            className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-surface-container-high transition-colors"
+            title={status === 'running' ? '暂停' : '继续'}
           >
             {status === 'running' ? (
-              <Pause className="w-4 h-4" />
+              <Pause className="w-4 h-4 text-on-surface" />
             ) : (
-              <Play className="w-4 h-4" />
+              <Play className="w-4 h-4 text-on-surface" />
             )}
           </button>
 
           {/* 停止 */}
           <button
             onClick={handleStop}
-            disabled={status === 'idle' || status === 'completed'}
-            className={cn(
-              'p-1.5 rounded-md transition-colors',
-              'hover:bg-surface-container-high text-on-surface-variant',
-              'disabled:opacity-30 disabled:cursor-not-allowed'
-            )}
+            className="w-8 h-8 flex items-center justify-center rounded-md hover:bg-surface-container-high transition-colors"
+            title="停止"
           >
-            <Square className="w-4 h-4" />
+            <Square className="w-4 h-4 text-on-surface" />
           </button>
 
-          {/* 跳到末尾 */}
-          <button
-            disabled={status === 'idle' || status === 'completed'}
-            className={cn(
-              'p-1.5 rounded-md transition-colors',
-              'hover:bg-surface-container-high text-on-surface-variant',
-              'disabled:opacity-30 disabled:cursor-not-allowed'
-            )}
-          >
-            <SkipForward className="w-4 h-4" />
-          </button>
-
-          {/* 进度条 */}
-          <div className="flex-1 mx-2">
-            <div className="h-1.5 bg-surface-container-high rounded-full overflow-hidden">
-              <div
-                className="h-full bg-primary rounded-full transition-all duration-300"
-                style={{
-                  width: `${runtime.totalBars > 0 ? (runtime.currentIndex / runtime.totalBars) * 100 : 0}%`,
-                }}
-              />
-            </div>
-          </div>
+          {/* 分隔 */}
+          <div className="w-px h-5 bg-outline-variant/30" />
 
           {/* 速度选择 */}
-          <div className="flex items-center gap-1">
-            {SPEED_OPTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => handleSpeedChange(s as 1 | 2 | 4 | 8)}
-                className={cn(
-                  'px-2 py-0.5 rounded text-xs font-medium transition-colors',
-                  speed === s
-                    ? 'bg-primary/20 text-primary'
-                    : 'text-on-surface-variant hover:bg-surface-container-high'
-                )}
-              >
-                {s}x
-              </button>
-            ))}
-          </div>
+          {SPEED_OPTIONS.map((s) => (
+            <button
+              key={s}
+              onClick={() => handleSpeedChange(s)}
+              className={cn(
+                'px-2 py-0.5 rounded text-xs font-medium transition-colors',
+                speed === s
+                  ? 'bg-primary text-on-primary'
+                  : 'text-on-surface-variant hover:bg-surface-container-high'
+              )}
+            >
+              {s}x
+            </button>
+          ))}
 
-          {/* 状态标签 */}
-          <span
-            className={cn(
-              'text-xs px-2 py-0.5 rounded-full font-medium',
-              status === 'running' && 'bg-primary/20 text-primary',
-              status === 'paused' && 'bg-warning/20 text-warning',
-              status === 'completed' && 'bg-success/20 text-success',
-              status === 'error' && 'bg-error/20 text-error',
-              status === 'idle' && 'bg-surface-container-high text-on-surface-variant'
-            )}
-          >
-            {status === 'idle' && '待启动'}
-            {status === 'running' && '回放中'}
-            {status === 'paused' && '已暂停'}
-            {status === 'completed' && '已完成'}
-            {status === 'error' && '异常'}
-          </span>
+          {/* 分隔 */}
+          <div className="w-px h-5 bg-outline-variant/30" />
+
+          {/* 状态信息 */}
+          <div className="ml-auto text-xs text-on-surface-variant font-mono-num">
+            {runtime.currentIndex} / {runtime.totalBars}
+          </div>
         </div>
       )}
     </div>
