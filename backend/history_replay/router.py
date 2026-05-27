@@ -1,4 +1,22 @@
-"""历史回放模块 - 路由定义"""
+"""
+历史回放模块 - 路由定义
+
+本文件定义了历史回放模块的所有 HTTP 接口，职责：
+  1. 声明 URL 路径、HTTP 方法、请求参数和路径参数
+  2. 将请求参数从 HTTP 层解包，调用 service 层获取业务数据
+  3. 将 service 返回的 Pydantic 模型序列化为统一响应格式 {"success": True, "data": ...}
+
+设计原则：
+  - router 不包含任何业务逻辑，仅做参数透传和响应包装
+  - 所有业务逻辑在 service.py 中实现
+  - 请求/响应的数据结构在 schemas.py 中定义
+  - 统一响应格式便于前端 request.ts 中的拦截器统一处理
+
+接口分三类：
+  - 配置数据接口：为前端配置栏提供下拉选项数据
+  - 回测控制接口：管理回测的生命周期（启动、暂停、继续、停止、调速）
+  - 回测数据接口：获取回测产生的图表和表格数据
+"""
 
 from fastapi import APIRouter
 
@@ -23,37 +41,135 @@ from .service import (
     get_equity_curve,
 )
 
+# 模块路由前缀 /api/replay，所有接口路径均以此为前缀
+# tags 用于 FastAPI 自动生成的 API 文档分组
 router = APIRouter(prefix="/api/replay", tags=["历史回放"])
 
 
-# === 配置数据接口 ===
+# ============================================================
+# 配置数据接口
+# 为前端回测配置栏提供下拉选项和搜索数据，用户在启动回测前需要完成配置
+# ============================================================
 
 @router.post("/stocks/search")
 async def search_stocks_api(req: StockSearchRequest):
-    """搜索股票（代码/名称/拼音模糊匹配）"""
+    """
+    搜索股票（代码/名称/拼音模糊匹配）
+
+    业务角度：
+      用户在配置栏的"股票代码"输入框中键入关键词时，前端实时调用此接口
+      获取匹配的股票列表，供用户选择回测标的。输入框的交互方式为：
+      键入 → 调接口 → 下拉展示候选 → 用户点选。
+
+    技术角度：
+      POST 而非 GET，因为 keyword 作为 JSON body 更灵活，未来可扩展搜索条件
+      （如市场筛选、行业筛选等）。req.keyword 为用户输入的搜索关键词，
+      req.limit 为返回数量上限（防止结果过多影响前端渲染性能）。
+
+    参数：
+      req.keyword (str): 搜索关键词，可以是股票代码（如 "000001"）、
+                         股票名称（如 "平安"）或拼音首字母（如 "PAYH"）
+      req.limit (int):   返回结果数量上限，默认 10
+
+    返回值：
+      {"success": True, "data": [StockInfo, ...]}
+      data 为匹配到的股票信息列表，每项包含 code（代码）、name（名称）、
+      market（市场）字段，供前端下拉列表渲染
+    """
     data = await search_stocks(req.keyword, req.limit)
     return {"success": True, "data": [d.model_dump() for d in data]}
 
 
 @router.get("/strategies")
 async def list_strategies_api():
-    """获取策略列表"""
+    """
+    获取策略列表
+
+    业务角度：
+      用户在配置栏的"策略选择"下拉框中需要选择一个策略来驱动回测。
+      此接口返回当前系统中所有可用的策略，供下拉框渲染选项。
+      策略来源为 strategy_engine 模块，后续对接时从该模块获取。
+
+    技术角度：
+      GET 方法，无请求参数。返回的列表数据量通常较小（几十条策略），
+      不需要分页。service 层目前返回 mock 数据，后续替换为
+      调用 strategy_engine 模块的接口。
+
+    参数：
+      无
+
+    返回值：
+      {"success": True, "data": [StrategyInfo, ...]}
+      data 为策略信息列表，每项包含 id（策略ID）、name（策略名称）、
+      description（策略描述）字段
+    """
     data = await list_strategies()
     return {"success": True, "data": [d.model_dump() for d in data]}
 
 
 @router.get("/virtual-accounts")
 async def list_virtual_accounts_api():
-    """获取虚拟账户列表"""
+    """
+    获取虚拟账户列表
+
+    业务角度：
+      用户在配置栏的"虚拟账户"下拉框中需要选择一个账户来承载回测。
+      虚拟账户包含初始资金、手续费率、持仓等配置，回测过程中所有的
+      模拟交易都在该账户体系下运行（扣款、建仓、平仓、算手续费等）。
+
+    技术角度：
+      GET 方法，无请求参数。返回的列表数据量通常很小（几个账户），
+      不需要分页。service 层目前返回 mock 数据，后续对接 account_trading
+      模块获取真实虚拟账户配置。
+
+    参数：
+      无
+
+    返回值：
+      {"success": True, "data": [VirtualAccountInfo, ...]}
+      data 为虚拟账户信息列表，每项包含 id（账户ID）、name（账户名称）、
+      initial_capital（初始资金）、commission_rate（手续费率）字段
+    """
     data = await list_virtual_accounts()
     return {"success": True, "data": [d.model_dump() for d in data]}
 
 
-# === 回测控制接口 ===
+# ============================================================
+# 回测控制接口
+# 管理回测会话的生命周期：创建会话、查询状态、暂停/继续/停止、调速
+# ============================================================
 
 @router.post("/start")
 async def start_replay_api(req: ReplayStartRequest):
-    """启动回测"""
+    """
+    启动回测
+
+    业务角度：
+      用户在配置栏完成所有选项后，点击"开始回测"按钮触发此接口。
+      后端根据配置（股票代码、策略、虚拟账户、时间范围、K线周期）
+      初始化一个回测会话，准备历史数据和策略引擎，返回会话ID。
+      前端拿到会话ID后，轮询 /session/{id} 获取进度，
+      并调用 /kline/{id}、/signals/{id} 等接口获取数据渲染图表。
+
+    技术角度：
+      POST 方法，因为启动回测是一个有副作用的操作（创建会话、加载资源）。
+      req 包含回测所需的全部配置参数，service 层返回包含 session_id
+      和 total_bars 的响应，前端据此初始化播放进度条和图表。
+
+    参数：
+      req.stock_code (str):   股票代码，如 "000001.SZ"，指定回测标的
+      req.strategy_id (int):  策略ID，指定使用哪个策略驱动回测
+      req.account_id (int):   虚拟账户ID，指定使用哪个账户承载模拟交易
+      req.timeframe (str):    K线周期，如 "1d"/"1h"/"5m"，
+                              决定每根K线的时间跨度和策略触发频率
+      req.start_date (str):   回测起始日期，格式 "YYYY-MM-DD"
+      req.end_date (str):     回测结束日期，格式 "YYYY-MM-DD"
+
+    返回值：
+      {"success": True, "data": {"session_id": int, "total_bars": int}}
+      session_id 为回测会话唯一标识，后续所有数据接口都需要传此ID；
+      total_bars 为该时间范围内的K线总根数，前端据此设置进度条最大值
+    """
     data = await start_replay(
         stock_code=req.stock_code,
         strategy_id=req.strategy_id,
@@ -67,57 +183,271 @@ async def start_replay_api(req: ReplayStartRequest):
 
 @router.get("/session/{session_id}")
 async def get_session_api(session_id: int):
-    """获取回测会话状态"""
+    """
+    获取回测会话状态
+
+    业务角度：
+      前端在回测运行期间需要实时了解当前进度（已播放到第几根K线）、
+      运行状态（运行中/已暂停/已完成/已停止），以便更新播放控制条
+      和进度条。此接口供前端轮询调用（或后续升级为 WebSocket 推送）。
+
+    技术角度：
+      GET 方法，session_id 作为路径参数。返回当前会话的快照状态，
+      包括 current_index（当前播放位置）和 status（运行状态枚举）。
+      前端根据 status 决定播放/暂停按钮的显示状态，
+      根据 current_index / total_bars 计算进度条百分比。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID，由 /start 接口返回
+
+    返回值：
+      {"success": True, "data": {"session_id": int, "status": str,
+       "current_index": int, "total_bars": int}}
+      session_id 为会话ID；status 为运行状态，取值：
+        "running"（运行中）、"paused"（已暂停）、
+        "completed"（已完成）、"stopped"（已停止）；
+      current_index 为当前播放到的K线索引（从0开始）；
+      total_bars 为K线总根数
+    """
     data = await get_session(session_id)
     return {"success": True, "data": data.model_dump()}
 
 
 @router.post("/control")
 async def control_replay_api(req: ReplayControlRequest):
-    """控制回测（暂停/继续/停止）"""
+    """
+    控制回测（暂停/继续/停止）
+
+    业务角度：
+      用户在回测播放过程中可以手动控制回测的运行状态：
+      - 暂停：暂时停止K线推进，方便观察某个时间点的数据和交易信号
+      - 继续：从暂停处恢复播放
+      - 停止：彻底终止回测，不可恢复
+      这三种操作对应前端播放控制条的三个按钮。
+
+    技术角度：
+      POST 方法，因为暂停/继续/停止都是改变服务端状态的有副作用操作。
+      req.action 为操作类型枚举，service 层根据 action 修改会话状态
+      并返回更新后的会话快照。
+
+    参数：
+      req.session_id (int): 回测会话ID
+      req.action (str):     控制动作，取值：
+                            "pause"（暂停）、"resume"（继续）、"stop"（停止）
+
+    返回值：
+      {"success": True, "data": {"session_id": int, "status": str,
+       "current_index": int, "total_bars": int}}
+      返回更新后的会话状态快照，结构与 /session/{id} 一致，
+      前端据此更新播放控制条和进度条
+    """
     data = await control_replay(req.session_id, req.action)
     return {"success": True, "data": data.model_dump()}
 
 
 @router.post("/speed")
 async def set_replay_speed_api(req: ReplaySpeedRequest):
-    """设置回测播放速度"""
+    """
+    设置回测播放速度
+
+    业务角度：
+      用户可以通过播放控制条的速度按钮调整K线推进速度（1x/2x/4x/8x），
+      快速跳过不感兴趣的区间，或在关键拐点放慢观察。
+      1x 表示每秒推进1根K线，2x 表示每秒推进2根，以此类推。
+
+    技术角度：
+      POST 方法，因为调速会改变服务端的回测推进频率。
+      req.speed 为倍速值，service 层将此值记录到会话配置中，
+      回测引擎根据 speed 调整推送频率。
+
+    参数：
+      req.session_id (int): 回测会话ID
+      req.speed (int):      播放倍速，取值 1/2/4/8，
+                            1=每秒1根K线，2=每秒2根，以此类推
+
+    返回值：
+      {"success": True, "data": {"session_id": int, "status": str,
+       "current_index": int, "total_bars": int}}
+      返回更新后的会话状态快照，前端据此确认调速成功
+    """
     data = await set_replay_speed(req.session_id, req.speed)
     return {"success": True, "data": data.model_dump()}
 
 
-# === 回测数据接口 ===
+# ============================================================
+# 回测数据接口
+# 获取回测过程中产生的各类数据，用于前端渲染图表和表格
+# 所有接口都需要 session_id 路径参数，确保数据归属正确的回测会话
+# ============================================================
 
 @router.get("/kline/{session_id}")
 async def get_kline_data_api(session_id: int):
-    """获取回测K线数据"""
+    """
+    获取回测K线数据
+
+    业务角度：
+      K线图是回测页面的核心图表，展示标的价格走势（开高低收）和成交量。
+      前端使用 lightweight-charts 渲染，此接口提供其所需的全部数据。
+      K线数据在回测启动后一次性加载（历史数据量通常可控），
+      前端根据播放进度控制可见范围。
+
+    技术角度：
+      GET 方法，session_id 作为路径参数标识回测会话。
+      返回 OHLCV 数据列表，每项包含 time（时间戳）、open/high/low/close
+      （开高低收价格）、volume（成交量）。service 层根据 session 对应的
+      股票代码和时间范围，从 api_data 模块获取历史K线数据
+      （目前为 mock 数据）。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": [KlineData, ...]}
+      data 为K线数据列表，按时间升序排列，每项包含：
+        time (int):    Unix 时间戳（秒）
+        open (float):  开盘价
+        high (float):  最高价
+        low (float):   最低价
+        close (float): 收盘价
+        volume (float): 成交量
+    """
     data = await get_kline_data(session_id)
     return {"success": True, "data": [d.model_dump() for d in data]}
 
 
 @router.get("/signals/{session_id}")
 async def get_trade_signals_api(session_id: int):
-    """获取交易信号"""
+    """
+    获取交易信号
+
+    业务角度：
+      交易信号是策略引擎在回测过程中产生的买卖决策点，前端在K线图上
+      用箭头标记展示（买入红色上箭头、卖出绿色下箭头），让用户直观
+      看到策略在何时触发了交易。信号与交易记录一一对应。
+
+    技术角度：
+      GET 方法，session_id 标识回测会话。返回信号列表，每项包含
+      时间、方向、价格、信号名称。前端将信号转换为 lightweight-charts
+      的 markers 格式，叠加在K线图上渲染。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": [TradeSignal, ...]}
+      data 为交易信号列表，按时间升序排列，每项包含：
+        time (int):    信号触发时间的 Unix 时间戳（秒）
+        side (str):    信号方向，"buy"（买入）/ "sell"（卖出）
+        price (float): 信号触发价格
+        signal (str):  信号名称，如 "均线金叉"/"RSI超卖反弹" 等，
+                       标识策略触发的具体条件
+    """
     data = await get_trade_signals(session_id)
     return {"success": True, "data": [d.model_dump() for d in data]}
 
 
 @router.get("/trades/{session_id}")
 async def get_trade_records_api(session_id: int):
-    """获取交易记录"""
+    """
+    获取交易记录
+
+    业务角度：
+      每笔交易信号触发后，会在虚拟账户中执行模拟交易（买入建仓或卖出平仓），
+      生成一条交易记录。交易记录表展示回测期间的所有成交明细，
+      包括方向、价格、数量、手续费、盈亏等，供用户逐笔审查策略表现。
+
+    技术角度：
+      GET 方法，session_id 标识回测会话。返回交易记录列表，每项包含
+      完整的成交信息。卖出交易的 pnl 字段为该笔平仓的实际盈亏
+      （已扣除手续费），买入交易的 pnl 为 0（未平仓无盈亏）。
+      前端根据 side 字段渲染方向标签（买入红/卖出绿），
+      根据 pnl 正负渲染盈亏数字颜色。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": [TradeRecord, ...]}
+      data 为交易记录列表，按时间升序排列，每项包含：
+        id (int):         交易记录ID
+        time (str):       成交时间，格式 "YYYY-MM-DD"
+        side (str):       交易方向，"buy"（买入）/ "sell"（卖出）
+        stock_code (str): 股票代码
+        price (float):    成交价格
+        quantity (int):   成交数量（股）
+        amount (float):   成交金额 = price × quantity
+        commission (float): 手续费 = amount × 手续费率
+        pnl (float):      盈亏（仅卖出时有值，= 卖出金额 - 买入金额 - 双边手续费）
+        signal (str):     触发信号名称
+    """
     data = await get_trade_records(session_id)
     return {"success": True, "data": [d.model_dump() for d in data]}
 
 
 @router.get("/metrics/{session_id}")
 async def get_metrics_api(session_id: int):
-    """获取回测指标"""
+    """
+    获取回测指标
+
+    业务角度：
+      回测指标面板展示策略的核心绩效数据，帮助用户快速判断策略优劣：
+      - 总收益率/年化收益：衡量策略盈利能力
+      - 最大回撤：衡量策略风险，回撤越大幅亏越严重
+      - 夏普比率：风险调整后收益，越高说明单位风险收益越好
+      - 胜率/盈亏比：衡量交易胜算和赔率
+      这些指标在回测完成后为最终值，回测进行中为当前累计值。
+
+    技术角度：
+      GET 方法，session_id 标识回测会话。返回单个指标对象（非列表），
+      包含 8 项指标。service 层从交易记录和资金曲线中计算得出
+      （目前为 mock 数据，后续实现真实计算逻辑）。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": ReplayMetrics}
+      data 为指标对象，包含：
+        total_return (float):    总收益率（%）
+        annual_return (float):   年化收益率（%）
+        max_drawdown (float):    最大回撤（%，负数）
+        sharpe_ratio (float):    夏普比率
+        win_rate (float):        胜率（%）
+        profit_loss_ratio (float): 盈亏比
+        trade_count (int):       交易次数（完整买卖算1次）
+        total_pnl (float):       总盈亏金额
+    """
     data = await get_metrics(session_id)
     return {"success": True, "data": data.model_dump()}
 
 
 @router.get("/equity/{session_id}")
 async def get_equity_curve_api(session_id: int):
-    """获取资金曲线"""
+    """
+    获取资金曲线
+
+    业务角度：
+      资金曲线图展示虚拟账户净值随时间的变化，是评估策略整体表现的
+      最直观方式。图表采用双轴：左轴为账户净值（金额），右轴为回撤
+      （百分比），用户可以同时看到盈利走势和回撤深度。
+      回测期间资金曲线随K线推进逐步延伸，回测完成后展示完整曲线。
+
+    技术角度：
+      GET 方法，session_id 标识回测会话。返回资金曲线数据列表，
+      每项包含时间戳、净值、回撤百分比。前端使用 ECharts 渲染
+      双轴折线图（净值线 + 回撤面积图）。
+      数据由 service 层从交易记录逐笔累计计算得出
+      （目前为 mock 数据，后续实现真实计算逻辑）。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": [EquityPoint, ...]}
+      data 为资金曲线数据列表，按时间升序排列，每项包含：
+        time (int):       Unix 时间戳（秒）
+        equity (float):   账户净值（金额）
+        drawdown (float): 当前回撤百分比（%，0 表示无回撤，负数表示从峰值回撤）
+    """
     data = await get_equity_curve(session_id)
     return {"success": True, "data": [d.model_dump() for d in data]}
