@@ -90,8 +90,25 @@ export function ReplayConfig() {
             !config.stockCode ||
             !config.strategyId ||
             !config.accountId ||
+            !config.startDate ||
+            !config.endDate ||
             runtime.loading ||
             isRunning
+          }
+          title={
+            !config.stockCode
+              ? '请先选择股票'
+              : !config.strategyId
+                ? '请先选择策略'
+                : !config.accountId
+                  ? '请先选择虚拟账户'
+                  : !config.startDate || !config.endDate
+                    ? '请设置日期范围'
+                    : runtime.loading
+                      ? '回测启动中'
+                      : isRunning
+                        ? '回测运行中'
+                        : ''
           }
           className={cn(
             'h-9 px-5 rounded-md text-sm font-medium flex items-center gap-2 transition-colors shrink-0',
@@ -233,7 +250,7 @@ function SelectField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        className="h-9 px-3 bg-surface-container rounded-md text-sm appearance-none min-w-[140px] focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40 cursor-pointer"
+        className="h-9 px-3 bg-surface-container rounded-md text-sm appearance-none min-w-[140px] focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40 cursor-pointer text-on-surface"
       >
         {placeholder && (
           <option value="" disabled>
@@ -271,7 +288,7 @@ function DateField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        className="h-9 px-3 bg-surface-container rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40"
+        className="h-9 px-3 bg-surface-container rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-40 text-on-surface"
       />
     </div>
   )
