@@ -17,6 +17,11 @@ from .schemas import (
     TradeRecord,
     ReplayMetrics,
     EquityPoint,
+    BenchmarkPoint,
+    StrategyReturnPoint,
+    DailyPnlPoint,
+    DailyPositionPoint,
+    ReplayLogEntry,
     ReplaySession,
     ReplayProgress,
     ReplayStatus,
@@ -280,6 +285,137 @@ def _generate_mock_dataset() -> dict:
     # 修正最大回撤
     metrics.max_drawdown = round(max_dd, 2)
 
+    # --- 7. 生成基准收益数据（模拟沪深300指数同期表现） ---
+    # 基准走势：2024年沪深300大致从3200到3500，涨幅约9-10%
+    benchmark_start = 3200.0
+    benchmark_key_points = [
+        (0.00, 3200),  # 年初
+        (0.10, 3100),  # 1月下跌
+        (0.20, 3250),  # 3月反弹
+        (0.40, 3300),  # 5月
+        (0.55, 3350),  # 7月
+        (0.65, 3280),  # 8月回调
+        (0.80, 3450),  # 10月反弹
+        (1.00, 3500),  # 年末
+    ]
+    benchmark_data: list[BenchmarkPoint] = []
+    for i, day in enumerate(trading_days):
+        t = i / max(total - 1, 1)
+        # 插值
+        prev_pt = benchmark_key_points[0]
+        next_pt = benchmark_key_points[-1]
+        for j in range(len(benchmark_key_points) - 1):
+            if benchmark_key_points[j][0] <= t <= benchmark_key_points[j + 1][0]:
+                prev_pt = benchmark_key_points[j]
+                next_pt = benchmark_key_points[j + 1]
+                break
+        if next_pt[0] == prev_pt[0]:
+            base_val = prev_pt[1]
+        else:
+            frac = (t - prev_pt[0]) / (next_pt[0] - prev_pt[0])
+            base_val = prev_pt[1] + frac * (next_pt[1] - prev_pt[1])
+        noise_b = rng.uniform(-15, 15)
+        cur_val = base_val + noise_b
+        return_pct = round((cur_val - benchmark_start) / benchmark_start * 100, 2)
+        benchmark_data.append(BenchmarkPoint(time=day, return_pct=return_pct))
+
+    # --- 8. 生成策略收益数据（从资金曲线推导） ---
+    strategy_return_data: list[StrategyReturnPoint] = []
+    for ep in equity_data:
+        ret = round((ep.equity - initial_capital) / initial_capital * 100, 2)
+        strategy_return_data.append(StrategyReturnPoint(time=ep.time, return_pct=ret))
+
+    # --- 9. 生成每日盈亏数据 ---
+    daily_pnl_data: list[DailyPnlPoint] = []
+    # 构建买入/卖出金额映射
+    buy_amount_map: dict[str, float] = {}
+    sell_amount_map: dict[str, float] = {}
+    for tr in trades:
+        if tr.side == TradeSide.BUY:
+            buy_amount_map[tr.time] = buy_amount_map.get(tr.time, 0) + tr.amount
+        else:
+            sell_amount_map[tr.time] = sell_amount_map.get(tr.time, 0) + tr.amount
+    for i, bar in enumerate(kline_data):
+        daily_pnl = 0.0
+        if i > 0:
+            daily_pnl = equity_data[i].equity - equity_data[i - 1].equity
+        daily_pnl_data.append(DailyPnlPoint(
+            time=bar.time,
+            pnl=round(daily_pnl, 2),
+            buy_amount=round(buy_amount_map.get(bar.time, 0), 2),
+            sell_amount=round(sell_amount_map.get(bar.time, 0), 2),
+        ))
+
+    # --- 10. 生成每日持仓数据 ---
+    daily_position_data: list[DailyPositionPoint] = []
+    # 构建持仓变化映射
+    position_map: dict[str, int] = {}  # time -> net change in quantity
+    for tr in trades:
+        if tr.side == TradeSide.BUY:
+            position_map[tr.time] = position_map.get(tr.time, 0) + int(tr.quantity)
+        else:
+            position_map[tr.time] = position_map.get(tr.time, 0) - int(tr.quantity)
+    current_qty = 0
+    for i, bar in enumerate(kline_data):
+        current_qty += position_map.get(bar.time, 0)
+        market_value = round(current_qty * bar.close, 2)
+        daily_pnl = 0.0
+        if i > 0:
+            daily_pnl = equity_data[i].equity - equity_data[i - 1].equity
+        daily_ret = round(daily_pnl / equity_data[i - 1].equity * 100, 2) if i > 0 and equity_data[i - 1].equity != 0 else 0.0
+        daily_position_data.append(DailyPositionPoint(
+            time=bar.time,
+            quantity=current_qty,
+            market_value=market_value,
+            daily_pnl=round(daily_pnl, 2),
+            daily_return_pct=daily_ret,
+            total_equity=round(equity_data[i].equity, 2),
+        ))
+
+    # --- 11. 生成回测日志 ---
+    log_entries: list[ReplayLogEntry] = []
+    log_entries.append(ReplayLogEntry(
+        time=trading_days[0], level="info",
+        message=f"回测启动 | 股票: 000001.SZ 平安银行 | 初始资金: ¥{initial_capital:,.0f}",
+    ))
+    for sig in signals:
+        side_cn = "买入" if sig.side == TradeSide.BUY else "卖出"
+        log_entries.append(ReplayLogEntry(
+            time=sig.time, level="info",
+            message=f"策略信号: {sig.signal} | {side_cn} {int(sig.quantity)}股 @ ¥{sig.price:.2f}",
+        ))
+    for tr in trades:
+        if tr.side == TradeSide.SELL and tr.pnl != 0:
+            level = "info" if tr.pnl > 0 else "warn"
+            pnl_cn = "盈利" if tr.pnl > 0 else "亏损"
+            log_entries.append(ReplayLogEntry(
+                time=tr.time, level=level,
+                message=f"交易了结: {pnl_cn} ¥{abs(tr.pnl):,.2f}",
+            ))
+    log_entries.append(ReplayLogEntry(
+        time=trading_days[-1], level="info",
+        message=f"回测完成 | 总盈亏: ¥{total_pnl:,.2f} | 收益率: {total_return}%",
+    ))
+
+    # --- 12. 补充报告视图扩展指标 ---
+    # 基准收益率：从基准数据末尾取
+    benchmark_return_val = benchmark_data[-1].return_pct if benchmark_data else 0.0
+    # 简化计算 alpha/beta/sortino 等（基于策略和基准收益）
+    beta_val = round(0.78, 2)
+    alpha_val = round((annual_return - 2.0 - beta_val * (benchmark_return_val - 2.0)) / 100, 3)
+    strategy_vol = round(0.484, 3)
+    benchmark_vol = round(0.131, 3)
+    sortino_val = round((annual_return - 2.0) / (0.6 * 15.87), 3) if True else 0.0
+    ir_val = round((annual_return - benchmark_return_val) / (0.5 * 15.87), 3)
+
+    metrics.benchmark_return = round(benchmark_return_val, 2)
+    metrics.alpha = alpha_val
+    metrics.beta = beta_val
+    metrics.sortino_ratio = sortino_val
+    metrics.information_ratio = ir_val
+    metrics.strategy_volatility = strategy_vol
+    metrics.benchmark_volatility = benchmark_vol
+
     return {
         "trading_days": trading_days,
         "kline_data": kline_data,
@@ -287,6 +423,11 @@ def _generate_mock_dataset() -> dict:
         "trades": trades,
         "metrics": metrics,
         "equity_data": equity_data,
+        "benchmark_data": benchmark_data,
+        "strategy_return_data": strategy_return_data,
+        "daily_pnl_data": daily_pnl_data,
+        "daily_position_data": daily_position_data,
+        "log_entries": log_entries,
     }
 
 
@@ -789,3 +930,138 @@ async def get_equity_curve(session_id: int) -> list[EquityPoint]:
     """
     ds = _get_mock_dataset()
     return ds["equity_data"]
+
+
+async def get_benchmark_data(session_id: int) -> list[BenchmarkPoint]:
+    """
+    获取基准收益数据
+
+    为什么有这个方法：
+        - 业务角度：评估策略好坏不能只看绝对收益，必须与基准对比。
+          基准通常是沪深300、上证指数等宽基指数，回答"策略跑赢市场了吗"的问题。
+          策略收益 vs 基准收益的对比图是回测报告中最核心的可视化之一。
+        - 技术角度：前端 ReturnChart 组件使用 ECharts 渲染策略收益与基准收益的
+          双线对比面积图，需要相同时间维度的 return_pct 序列。
+
+    参数：
+        session_id (int):
+            - 技术含义：回测会话唯一 ID，用于关联查询该回测期间的基准数据。
+            - 业务含义：获取哪次回测对应时间段的基准指数表现。
+
+    返回值：
+        list[BenchmarkPoint]:
+            - 技术含义：BenchmarkPoint 模型的列表，每项包含 time（日期）、
+              return_pct（累计收益率百分比）。
+            - 业务含义：基准指数在回测期间的累计收益序列。与策略收益曲线叠加后，
+              两者的差距即为超额收益（Alpha）。
+    """
+    ds = _get_mock_dataset()
+    return ds["benchmark_data"]
+
+
+async def get_strategy_return_data(session_id: int) -> list[StrategyReturnPoint]:
+    """
+    获取策略收益数据
+
+    为什么有这个方法：
+        - 业务角度：与基准收益对应，策略收益数据展示策略本身的累计收益曲线。
+          两者放在同一张图中对比，直观呈现策略是否跑赢基准、超额收益的变化趋势。
+        - 技术角度：前端 ReturnChart 组件需要此数据绘制蓝色策略收益曲线，
+          与红色基准收益曲线形成对比。数据从资金曲线推导而来，
+          return_pct = (equity - initial_capital) / initial_capital * 100。
+
+    参数：
+        session_id (int):
+            - 技术含义：回测会话唯一 ID，用于关联查询该回测的策略收益序列。
+            - 业务含义：获取哪次回测的策略累计收益表现。
+
+    返回值：
+        list[StrategyReturnPoint]:
+            - 技术含义：StrategyReturnPoint 模型的列表，每项包含 time（日期）、
+              return_pct（累计收益率百分比）。
+            - 业务含义：策略在回测期间的累计收益序列。与基准收益叠加后可计算
+              各时点的超额收益。
+    """
+    ds = _get_mock_dataset()
+    return ds["strategy_return_data"]
+
+
+async def get_daily_pnl(session_id: int) -> list[DailyPnlPoint]:
+    """
+    获取每日盈亏数据
+
+    为什么有这个方法：
+        - 业务角度：累计收益曲线掩盖了日度波动细节。每日盈亏柱状图让用户看到
+          策略每天赚了还是亏了、金额多大，识别策略的收益集中度——是少数几天大赚
+          支撑整体收益，还是每天都有稳定小赚。同时展示每日的买入/卖出金额，
+          帮助理解资金流向。
+        - 技术角度：前端 DailyPnlChart 组件使用 ECharts 渲染柱状图，
+          正值用红色柱（盈利），负值用绿色柱（亏损），叠加买入/卖出金额的
+          小柱形对比。
+
+    参数：
+        session_id (int):
+            - 技术含义：回测会话唯一 ID，用于关联查询该回测的每日盈亏序列。
+            - 业务含义：获取哪次回测的逐日盈亏明细。
+
+    返回值：
+        list[DailyPnlPoint]:
+            - 技术含义：DailyPnlPoint 模型的列表，每项包含 time（日期）、
+              pnl（当日盈亏金额）、buy_amount（当日买入金额）、sell_amount（当日卖出金额）。
+            - 业务含义：回测期间每天的盈亏金额和买卖金额序列。
+    """
+    ds = _get_mock_dataset()
+    return ds["daily_pnl_data"]
+
+
+async def get_daily_positions(session_id: int) -> list[DailyPositionPoint]:
+    """
+    获取每日持仓数据
+
+    为什么有这个方法：
+        - 业务角度：交易记录只记录买卖时刻，不反映"两次交易之间"的持仓状态。
+          每日持仓表让用户看到每一天持了多少股、值多少钱、当天涨跌多少，
+          是理解策略持仓节奏和风险敞口的关键数据。
+        - 技术角度：前端 DailyPosition 组件渲染为数据表格，
+          列包含日期/持仓数量/市值/当日盈亏/当日收益率/总资产。
+
+    参数：
+        session_id (int):
+            - 技术含义：回测会话唯一 ID，用于关联查询该回测的每日持仓序列。
+            - 业务含义：获取哪次回测的逐日持仓明细。
+
+    返回值：
+        list[DailyPositionPoint]:
+            - 技术含义：DailyPositionPoint 模型的列表，每项包含 time（日期）、
+              quantity（持仓数量）、market_value（持仓市值）、daily_pnl（当日盈亏）、
+              daily_return_pct（当日收益率%）、total_equity（账户总资产）。
+            - 业务含义：回测期间每天的持仓快照和收益数据。
+    """
+    ds = _get_mock_dataset()
+    return ds["daily_position_data"]
+
+
+async def get_replay_logs(session_id: int) -> list[ReplayLogEntry]:
+    """
+    获取回测日志
+
+    为什么有这个方法：
+        - 业务角度：策略运行过程中除了买卖信号，还会产生各种运行信息：
+          初始化参数、信号触发原因、风险警告、异常处理等。日志是回测过程
+          最详细的记录，帮助用户排查策略逻辑问题（例如"为什么这个信号没有触发"）。
+        - 技术角度：前端 LogsTab 组件渲染为带颜色标签的日志列表，
+          info 用蓝色、warn 用黄色、error 用红色。日志按时间排序。
+
+    参数：
+        session_id (int):
+            - 技术含义：回测会话唯一 ID，用于关联查询该回测的运行日志。
+            - 业务含义：获取哪次回测的完整运行日志。
+
+    返回值：
+        list[ReplayLogEntry]:
+            - 技术含义：ReplayLogEntry 模型的列表，每项包含 time（日志时间）、
+              level（级别：info/warn/error）、message（日志内容）。
+            - 业务含义：回测引擎的完整运行记录，包含启动、信号、交易、完成等关键事件。
+    """
+    ds = _get_mock_dataset()
+    return ds["log_entries"]

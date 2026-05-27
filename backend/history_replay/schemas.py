@@ -119,12 +119,57 @@ class ReplayMetrics(BaseModel):
     profit_loss_ratio: float = Field(..., description="盈亏比")
     trade_count: int = Field(..., description="交易次数")
     total_pnl: float = Field(..., description="总盈亏")
+    # 报告视图扩展指标
+    benchmark_return: float = Field(default=0.0, description="基准收益率(%)")
+    alpha: float = Field(default=0.0, description="阿尔法系数")
+    beta: float = Field(default=0.0, description="贝塔系数")
+    sortino_ratio: float = Field(default=0.0, description="索提诺比率")
+    information_ratio: float = Field(default=0.0, description="信息率")
+    strategy_volatility: float = Field(default=0.0, description="策略波动率")
+    benchmark_volatility: float = Field(default=0.0, description="基准波动率")
 
 
 class EquityPoint(BaseModel):
     time: str
     equity: float
     drawdown: float
+
+
+class BenchmarkPoint(BaseModel):
+    """基准收益数据点"""
+    time: str = Field(..., description="日期")
+    return_pct: float = Field(..., description="累计收益率(%)")
+
+
+class StrategyReturnPoint(BaseModel):
+    """策略收益数据点"""
+    time: str = Field(..., description="日期")
+    return_pct: float = Field(..., description="累计收益率(%)")
+
+
+class DailyPnlPoint(BaseModel):
+    """每日盈亏数据点"""
+    time: str = Field(..., description="日期")
+    pnl: float = Field(..., description="当日盈亏金额")
+    buy_amount: float = Field(default=0.0, description="当日买入金额")
+    sell_amount: float = Field(default=0.0, description="当日卖出金额")
+
+
+class DailyPositionPoint(BaseModel):
+    """每日持仓数据点"""
+    time: str = Field(..., description="日期")
+    quantity: int = Field(..., description="持仓数量（股）")
+    market_value: float = Field(..., description="持仓市值")
+    daily_pnl: float = Field(..., description="当日收益金额")
+    daily_return_pct: float = Field(..., description="当日收益率(%)")
+    total_equity: float = Field(..., description="账户总资产")
+
+
+class ReplayLogEntry(BaseModel):
+    """回测日志条目"""
+    time: str = Field(..., description="日志时间")
+    level: str = Field(..., description="日志级别: info / warn / error")
+    message: str = Field(..., description="日志内容")
 
 
 class ReplaySession(BaseModel):

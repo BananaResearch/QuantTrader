@@ -39,6 +39,11 @@ from .service import (
     get_trade_records,
     get_metrics,
     get_equity_curve,
+    get_benchmark_data,
+    get_strategy_return_data,
+    get_daily_pnl,
+    get_daily_positions,
+    get_replay_logs,
 )
 
 # 模块路由前缀 /api/replay，所有接口路径均以此为前缀
@@ -450,4 +455,156 @@ async def get_equity_curve_api(session_id: int):
         drawdown (float): 当前回撤百分比（%，0 表示无回撤，负数表示从峰值回撤）
     """
     data = await get_equity_curve(session_id)
+    return {"success": True, "data": [d.model_dump() for d in data]}
+
+
+# ============================================================
+# 报告视图数据接口
+# 回测完成后，前端切换到报告视图，展示完整的回测分析报告
+# 包含基准对比、每日盈亏、每日持仓、运行日志等维度
+# ============================================================
+
+@router.get("/benchmark/{session_id}")
+async def get_benchmark_data_api(session_id: int):
+    """
+    获取基准收益数据
+
+    业务角度：
+      评估策略不能只看绝对收益，必须与基准指数（如沪深300）对比。
+      此接口返回基准指数在回测同期的累计收益率序列，前端与策略收益
+      叠加渲染为对比折线图，直观回答"策略跑赢市场了吗"。
+
+    技术角度：
+      GET 方法，session_id 标识回测会话。返回基准收益数据列表，
+      每项包含 time（日期）和 return_pct（累计收益率%）。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": [BenchmarkPoint, ...]}
+      data 为基准收益数据列表，按时间升序排列，每项包含：
+        time (str):         日期，格式 "YYYY-MM-DD"
+        return_pct (float): 累计收益率（%）
+    """
+    data = await get_benchmark_data(session_id)
+    return {"success": True, "data": [d.model_dump() for d in data]}
+
+
+@router.get("/strategy-return/{session_id}")
+async def get_strategy_return_data_api(session_id: int):
+    """
+    获取策略收益数据
+
+    业务角度：
+      与基准收益对应，展示策略自身的累计收益曲线。两者在同一张图中
+      对比，差距即为超额收益（Alpha）。策略收益从资金曲线推导：
+      return_pct = (equity - initial_capital) / initial_capital * 100。
+
+    技术角度：
+      GET 方法，session_id 标识回测会话。返回策略收益数据列表，
+      每项包含 time（日期）和 return_pct（累计收益率%）。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": [StrategyReturnPoint, ...]}
+      data 为策略收益数据列表，按时间升序排列，每项包含：
+        time (str):         日期，格式 "YYYY-MM-DD"
+        return_pct (float): 累计收益率（%）
+    """
+    data = await get_strategy_return_data(session_id)
+    return {"success": True, "data": [d.model_dump() for d in data]}
+
+
+@router.get("/daily-pnl/{session_id}")
+async def get_daily_pnl_api(session_id: int):
+    """
+    获取每日盈亏数据
+
+    业务角度：
+      累计收益曲线掩盖了日度波动细节。每日盈亏柱状图展示策略每天
+      赚了还是亏了、金额多大，帮助用户识别收益集中度和波动节奏。
+      同时展示每日的买入/卖出金额，理解资金流向。
+
+    技术角度：
+      GET 方法，session_id 标识回测会话。返回每日盈亏数据列表，
+      每项包含 time（日期）、pnl（当日盈亏金额）、buy_amount
+      （当日买入金额）、sell_amount（当日卖出金额）。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": [DailyPnlPoint, ...]}
+      data 为每日盈亏数据列表，按时间升序排列，每项包含：
+        time (str):        日期，格式 "YYYY-MM-DD"
+        pnl (float):       当日盈亏金额
+        buy_amount (float): 当日买入金额
+        sell_amount (float): 当日卖出金额
+    """
+    data = await get_daily_pnl(session_id)
+    return {"success": True, "data": [d.model_dump() for d in data]}
+
+
+@router.get("/daily-positions/{session_id}")
+async def get_daily_positions_api(session_id: int):
+    """
+    获取每日持仓数据
+
+    业务角度：
+      交易记录只记录买卖时刻，不反映"两次交易之间"的持仓状态。
+      每日持仓表让用户看到每一天持了多少股、值多少钱、当天涨跌多少，
+      是理解策略持仓节奏和风险敞口的关键数据。
+
+    技术角度：
+      GET 方法，session_id 标识回测会话。返回每日持仓数据列表，
+      每项包含 time（日期）、quantity（持仓数量）、market_value
+      （持仓市值）、daily_pnl（当日盈亏）、daily_return_pct
+      （当日收益率%）、total_equity（账户总资产）。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": [DailyPositionPoint, ...]}
+      data 为每日持仓数据列表，按时间升序排列，每项包含：
+        time (str):              日期，格式 "YYYY-MM-DD"
+        quantity (int):          持仓数量（股）
+        market_value (float):    持仓市值
+        daily_pnl (float):       当日盈亏金额
+        daily_return_pct (float): 当日收益率（%）
+        total_equity (float):    账户总资产
+    """
+    data = await get_daily_positions(session_id)
+    return {"success": True, "data": [d.model_dump() for d in data]}
+
+
+@router.get("/logs/{session_id}")
+async def get_replay_logs_api(session_id: int):
+    """
+    获取回测日志
+
+    业务角度：
+      策略运行过程中除了买卖信号，还会产生各种运行信息：初始化参数、
+      信号触发原因、风险警告、异常处理等。日志是回测过程最详细的记录，
+      帮助用户排查策略逻辑问题（如"为什么这个信号没有触发"）。
+
+    技术角度：
+      GET 方法，session_id 标识回测会话。返回日志列表，
+      每项包含 time（日志时间）、level（级别：info/warn/error）、
+      message（日志内容）。前端按级别用不同颜色标签渲染。
+
+    参数：
+      session_id (int): 路径参数，回测会话ID
+
+    返回值：
+      {"success": True, "data": [ReplayLogEntry, ...]}
+      data 为日志条目列表，按时间升序排列，每项包含：
+        time (str):    日志时间，格式 "YYYY-MM-DD"
+        level (str):   日志级别，"info" / "warn" / "error"
+        message (str): 日志内容
+    """
+    data = await get_replay_logs(session_id)
     return {"success": True, "data": [d.model_dump() for d in data]}

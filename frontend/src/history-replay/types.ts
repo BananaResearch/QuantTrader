@@ -99,6 +99,14 @@ export interface ReplayMetrics {
   profit_loss_ratio: number
   trade_count: number
   total_pnl: number
+  /** 报告视图扩展指标 */
+  benchmark_return?: number
+  alpha?: number
+  beta?: number
+  sortino_ratio?: number
+  information_ratio?: number
+  strategy_volatility?: number
+  benchmark_volatility?: number
 }
 
 /** === 资金曲线数据点 === */
@@ -109,6 +117,58 @@ export interface EquityPoint {
   drawdown: number
 }
 
+/** === 报告视图：基准收益数据点 === */
+
+export interface BenchmarkPoint {
+  time: string
+  /** 基准累计收益率（百分比） */
+  return_pct: number
+}
+
+/** === 报告视图：策略收益数据点 === */
+
+export interface StrategyReturnPoint {
+  time: string
+  /** 策略累计收益率（百分比） */
+  return_pct: number
+}
+
+/** === 报告视图：每日盈亏数据点 === */
+
+export interface DailyPnlPoint {
+  time: string
+  /** 当日盈亏金额 */
+  pnl: number
+  /** 当日买入金额 */
+  buy_amount: number
+  /** 当日卖出金额 */
+  sell_amount: number
+}
+
+/** === 报告视图：每日持仓数据点 === */
+
+export interface DailyPositionPoint {
+  time: string
+  /** 持仓数量 */
+  quantity: number
+  /** 持仓市值 */
+  market_value: number
+  /** 当日收益金额 */
+  daily_pnl: number
+  /** 当日收益率（百分比） */
+  daily_return_pct: number
+  /** 账户总资产 */
+  total_equity: number
+}
+
+/** === 报告视图：日志条目 === */
+
+export interface ReplayLogEntry {
+  time: string
+  level: 'info' | 'warn' | 'error'
+  message: string
+}
+
 /** === 回测进度（播放控制用） === */
 
 export interface ReplayProgress {
@@ -117,3 +177,11 @@ export interface ReplayProgress {
   speed: 1 | 2 | 4 | 8
   status: ReplayStatus
 }
+
+/** === 报告视图 Tab === */
+
+export type ReportTab =
+  | 'overview'       // 收益概述
+  | 'trades'         // 交易详情
+  | 'daily_position' // 每日持仓&收益
+  | 'logs'           // 日志输出

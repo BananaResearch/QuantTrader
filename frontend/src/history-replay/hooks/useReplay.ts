@@ -13,6 +13,12 @@ import type {
   TradeRecord,
   EquityPoint,
   ReplayStatus,
+  BenchmarkPoint,
+  StrategyReturnPoint,
+  DailyPnlPoint,
+  DailyPositionPoint,
+  ReplayLogEntry,
+  ReportTab,
 } from '../types'
 
 // === 回测配置状态 ===
@@ -71,6 +77,16 @@ interface ReplayRuntimeState {
   metrics: ReplayMetrics | null
   equityCurve: EquityPoint[]
 
+  // 报告视图数据
+  benchmarkData: BenchmarkPoint[]
+  strategyReturnData: StrategyReturnPoint[]
+  dailyPnlData: DailyPnlPoint[]
+  dailyPositionData: DailyPositionPoint[]
+  logEntries: ReplayLogEntry[]
+
+  // 报告视图状态
+  reportTab: ReportTab
+
   // 加载状态
   loading: boolean
 
@@ -79,6 +95,8 @@ interface ReplayRuntimeState {
   controlReplay: (action: 'pause' | 'resume' | 'stop') => Promise<void>
   setSpeed: (speed: 1 | 2 | 4 | 8) => Promise<void>
   fetchSessionData: (sessionId: number) => Promise<void>
+  fetchReportData: (sessionId: number) => Promise<void>
+  setReportTab: (tab: ReportTab) => void
   reset: () => void
 }
 
@@ -93,6 +111,12 @@ const initialRuntime = {
   trades: [] as TradeRecord[],
   metrics: null as ReplayMetrics | null,
   equityCurve: [] as EquityPoint[],
+  benchmarkData: [] as BenchmarkPoint[],
+  strategyReturnData: [] as StrategyReturnPoint[],
+  dailyPnlData: [] as DailyPnlPoint[],
+  dailyPositionData: [] as DailyPositionPoint[],
+  logEntries: [] as ReplayLogEntry[],
+  reportTab: 'overview' as ReportTab,
   loading: false,
 }
 
@@ -121,6 +145,10 @@ export const useReplayRuntime = create<ReplayRuntimeState>((set, get) => ({
         })
         // 启动后拉取全部回测数据
         await get().fetchSessionData(session.session_id)
+        // 如果已直接完成（stub 情况），也拉取报告数据
+        if (session.status === 'completed') {
+          await get().fetchReportData(session.session_id)
+        }
       }
     } catch {
       set({ status: 'error', loading: false })
@@ -136,7 +164,12 @@ export const useReplayRuntime = create<ReplayRuntimeState>((set, get) => ({
         action,
       })
       if (res.success && res.data) {
-        set({ status: res.data.status })
+        const newStatus = res.data.status
+        set({ status: newStatus })
+        // 如果停止后变为完成状态，拉取报告数据
+        if (newStatus === 'completed') {
+          await get().fetchReportData(sessionId)
+        }
       }
     } catch {
       set({ status: 'error' })
@@ -177,6 +210,29 @@ export const useReplayRuntime = create<ReplayRuntimeState>((set, get) => ({
       // 数据拉取失败不改变状态
     }
   },
+
+  fetchReportData: async (sessionId) => {
+    try {
+      const [benchmarkRes, returnRes, pnlRes, positionRes, logsRes] = await Promise.all([
+        request.get<unknown, ApiResponse<BenchmarkPoint[]>>(`/replay/benchmark/${sessionId}`),
+        request.get<unknown, ApiResponse<StrategyReturnPoint[]>>(`/replay/strategy-return/${sessionId}`),
+        request.get<unknown, ApiResponse<DailyPnlPoint[]>>(`/replay/daily-pnl/${sessionId}`),
+        request.get<unknown, ApiResponse<DailyPositionPoint[]>>(`/replay/daily-positions/${sessionId}`),
+        request.get<unknown, ApiResponse<ReplayLogEntry[]>>(`/replay/logs/${sessionId}`),
+      ])
+      set({
+        benchmarkData: benchmarkRes.success ? (benchmarkRes.data ?? []) : [],
+        strategyReturnData: returnRes.success ? (returnRes.data ?? []) : [],
+        dailyPnlData: pnlRes.success ? (pnlRes.data ?? []) : [],
+        dailyPositionData: positionRes.success ? (positionRes.data ?? []) : [],
+        logEntries: logsRes.success ? (logsRes.data ?? []) : [],
+      })
+    } catch {
+      // 数据拉取失败不改变状态
+    }
+  },
+
+  setReportTab: (tab) => set({ reportTab: tab }),
 
   reset: () => set(initialRuntime),
 }))
