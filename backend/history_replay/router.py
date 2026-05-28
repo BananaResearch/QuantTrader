@@ -25,6 +25,7 @@ from .schemas import (
     ReplayControlRequest,
     ReplaySpeedRequest,
     StockSearchRequest,
+    EvaluateRequest,
 )
 from .service import (
     search_stocks,
@@ -44,6 +45,8 @@ from .service import (
     get_daily_pnl,
     get_daily_positions,
     get_replay_logs,
+    fetch_strategy_snapshot,
+    evaluate_strategy,
 )
 
 # 模块路由前缀 /api/replay，所有接口路径均以此为前缀
@@ -608,3 +611,76 @@ async def get_replay_logs_api(session_id: int):
     """
     data = await get_replay_logs(session_id)
     return {"success": True, "data": [d.model_dump() for d in data]}
+
+
+# ============================================================
+# 策略引擎代理接口
+# 转发到策略引擎（模块3），策略引擎不可用时降级为 mock
+# 这些接口不暴露给前端，仅供回测引擎内部调用
+# 但也通过 HTTP 暴露，方便前端在需要时直接拉取快照
+# ============================================================
+
+@router.get("/strategy/{strategy_id}/snapshot")
+async def get_strategy_snapshot(
+    strategy_id: int,
+    version_no: int | None = None,
+):
+    """
+    拉取策略版本快照——转发策略引擎
+
+    业务角度：
+      前端在启动回测时可以预览策略的快照信息（买卖表达式、参数等），
+      也可以由后端回测引擎在 start_replay 时内部调用。
+
+    技术角度：
+      GET 方法，strategy_id 为路径参数，version_no 为可选查询参数。
+      转发到策略引擎 GET /api/strategy/{id}/versions/{version_no}，
+      策略引擎不可用时降级返回 mock 快照。
+
+    参数：
+      strategy_id (int): 路径参数，策略ID
+      version_no (int|None): 查询参数，版本号，缺省使用当前版本
+
+    返回值：
+      {"success": True, "data": StrategyVersionSnapshot}
+      data 包含：version_id, version_no, buy_expression, sell_expression,
+      params_default, params_schema, compiled_meta
+    """
+    data = await fetch_strategy_snapshot(strategy_id, version_no)
+    return {"success": True, "data": data.model_dump()}
+
+
+@router.post("/strategy/{strategy_id}/evaluate")
+async def post_evaluate(
+    strategy_id: int,
+    req: EvaluateRequest,
+):
+    """
+    策略单点求值——转发策略引擎
+
+    业务角度：
+      回测引擎逐 bar 调用此接口，判断策略在当前市场状态下应买入还是卖出。
+      使用与实盘完全相同的 evaluate 接口，保证回测与实盘策略行为一致。
+
+    技术角度：
+      POST 方法，strategy_id 为路径参数，请求体包含 version_id、params、
+      context（当前 bar + 历史窗口）、debug 标志。
+      转发到策略引擎 POST /api/strategy/{id}/evaluate，
+      策略引擎不可用时降级返回 mock 求值结果。
+
+    参数：
+      strategy_id (int): 路径参数，策略ID
+      req (EvaluateRequest): 请求体
+        - version_id (int|None): 版本ID
+        - params (dict|None): 覆盖默认参数
+        - context: 当前 bar 数据（open/high/low/close/volume/amount/ts）
+          + history（历史窗口，升序数组）
+        - debug (bool): 是否返回中间因子值
+
+    返回值：
+      {"success": True, "data": EvaluateResult}
+      data 包含：strategy_id, version_id, version_no, ts, buy, sell,
+      factors（debug时）, elapsed_ms
+    """
+    data = await evaluate_strategy(strategy_id, req)
+    return {"success": True, "data": data.model_dump()}
