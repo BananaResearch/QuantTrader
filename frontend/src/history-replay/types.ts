@@ -12,10 +12,6 @@ export interface StrategyOption {
   id: number
   name: string
   description?: string
-  status: string
-  current_version_id?: number
-  current_version_no?: number
-  timeframe?: string
 }
 
 /** 虚拟账户选项 */

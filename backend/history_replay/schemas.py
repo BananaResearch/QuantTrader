@@ -69,57 +69,9 @@ class StockOption(BaseModel):
 
 
 class StrategyOption(BaseModel):
-    """策略列表选项——从策略引擎转发"""
     id: int
     name: str
     description: Optional[str] = None
-    status: str = Field(default="active", description="策略状态: draft / active / archived")
-    current_version_id: Optional[int] = Field(default=None, description="当前发布版本的ID")
-    current_version_no: Optional[int] = Field(default=None, description="当前发布版本号")
-    timeframe: Optional[str] = Field(default=None, description="策略适用的K线周期")
-
-
-class StrategyVersionSnapshot(BaseModel):
-    """策略版本快照——从策略引擎转发，供回测引擎使用"""
-    version_id: int = Field(..., description="版本ID")
-    version_no: int = Field(..., description="版本号")
-    buy_expression: str = Field(..., description="买入表达式")
-    sell_expression: str = Field(..., description="卖出表达式")
-    params_default: dict = Field(default_factory=dict, description="默认参数")
-    params_schema: Optional[dict] = Field(default=None, description="参数校验schema")
-    compiled_meta: Optional[dict] = Field(default=None, description="编译元信息，含 max_history_window 等")
-
-
-class EvaluateContext(BaseModel):
-    """策略求值上下文——回测引擎拼装后发给策略引擎"""
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    amount: float = Field(default=0.0, description="成交额")
-    ts: int = Field(..., description="毫秒时间戳")
-    history: Optional[dict] = Field(default=None, description="历史窗口数据")
-
-
-class EvaluateRequest(BaseModel):
-    """策略求值请求——转发到策略引擎"""
-    version_id: Optional[int] = Field(default=None, description="版本ID，缺省使用当前版本")
-    params: Optional[dict] = Field(default=None, description="覆盖默认参数")
-    context: EvaluateContext
-    debug: bool = Field(default=False, description="是否返回中间因子值")
-
-
-class EvaluateResult(BaseModel):
-    """策略求值结果——从策略引擎返回"""
-    strategy_id: int
-    version_id: int
-    version_no: int
-    ts: int
-    buy: bool = False
-    sell: bool = False
-    factors: Optional[dict] = Field(default=None, description="debug=true时的中间因子值")
-    elapsed_ms: int = 0
 
 
 class VirtualAccountOption(BaseModel):

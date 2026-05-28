@@ -1,23 +1,16 @@
-"""历史回放模块 - 业务逻辑层
+"""历史回放模块 - 业务逻辑层（stub，返回 mock 数据）
 
-策略列表/快照/求值：转发到策略引擎（模块3），转发失败时降级为 mock 数据。
-回测引擎：拉取策略快照 → 逐 bar 拼装 context → 调用 evaluate → 模拟撮合。
-K线/基准等数据：目前使用 mock，后续对接 api_data 模块。
+所有 mock 数据通过 _generate_mock_dataset() 统一生成，保证
+K线、信号、交易记录、指标、资金曲线之间逻辑自洽。
 """
 
 import random
-import httpx
-import logging
 from datetime import date, timedelta
 from functools import lru_cache
 
-from common.config import get_settings
 from .schemas import (
     StockOption,
     StrategyOption,
-    StrategyVersionSnapshot,
-    EvaluateRequest,
-    EvaluateResult,
     VirtualAccountOption,
     KlineBar,
     TradeSignal,
@@ -34,21 +27,6 @@ from .schemas import (
     ReplayStatus,
     TradeSide,
 )
-
-logger = logging.getLogger(__name__)
-
-# 降级日志静默标志：策略引擎不可用时只打印首次警告，避免逐 bar 重复刷屏
-_evaluate_fail_logged = False
-
-# 回测结果内存缓存：session_id → 完整结果 dict
-# 正式环境应使用数据库或 Redis，当前用内存缓存方便开发
-_replay_results: dict[int, dict] = {}
-
-
-def _parse_date_to_ts(date_str: str) -> float:
-    """将 'YYYY-MM-DD' 格式日期转为毫秒时间戳"""
-    from datetime import datetime as dt
-    return dt.strptime(date_str, "%Y-%m-%d").timestamp() * 1000
 
 
 # ============================================================
@@ -521,58 +499,31 @@ async def search_stocks(keyword: str, limit: int = 10) -> list[StockOption]:
 
 async def list_strategies() -> list[StrategyOption]:
     """
-    获取可用策略列表——转发策略引擎，失败降级 mock
+    获取可用策略列表
 
     为什么有这个方法：
         - 业务角度：回测的核心是"用历史数据验证策略"，用户必须选择一个策略才能启动回测。
           策略列表让用户看到系统中有哪些可用的量化策略及其简要描述，辅助决策。
         - 技术角度：前端配置栏的策略下拉框在组件挂载时调用此接口填充选项。
-          策略数据来源于策略引擎模块（strategy_engine），通过 HTTP 转发获取。
-          当策略引擎不可用时，降级返回 mock 数据，确保前端可用。
+          策略数据来源于策略引擎模块（strategy_engine），正式实现时需要跨模块调用
+          策略引擎的接口或直接查询策略表。当前 stub 返回 4 个典型策略的 mock 数据。
 
     参数：无
         策略列表是全局的，不需要过滤参数。未来可扩展 category 等筛选条件。
 
     返回值：
         list[StrategyOption]:
-            - 技术含义：StrategyOption 模型的列表，每项包含 id、name、description、
-              status、current_version_id、current_version_no、timeframe。
+            - 技术含义：StrategyOption 模型的列表，每项包含 id（策略唯一标识）、
+              name（策略名称）、description（策略描述，可选）。
             - 业务含义：系统中所有可用于回测的量化策略。用户选择某项后，
-              strategy_id 会被传入 start_replay 接口，回测引擎据此拉取策略快照并逐 bar 求值。
+              strategy_id 会被传入 start_replay 接口，回测引擎据此加载对应策略逻辑。
     """
-    settings = get_settings()
-    base_url = settings.STRATEGY_ENGINE_URL
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{base_url}/api/strategy/list")
-            resp.raise_for_status()
-            data = resp.json()
-            # 策略引擎返回格式: {"data": [...]}
-            items = data.get("data", data) if isinstance(data, dict) else data
-            return [
-                StrategyOption(
-                    id=item["id"],
-                    name=item["name"],
-                    description=item.get("description"),
-                    status=item.get("status", "active"),
-                    current_version_id=item.get("current_version_id"),
-                    current_version_no=item.get("current_version_no"),
-                    timeframe=item.get("timeframe"),
-                )
-                for item in items
-            ]
-    except Exception as e:
-        logger.warning(f"策略引擎不可用，降级返回 mock 数据: {e}")
-        return [
-            StrategyOption(id=1, name="双均线交叉", description="短期均线上穿长期均线买入",
-                           status="active", current_version_id=1, current_version_no=1, timeframe="1d"),
-            StrategyOption(id=2, name="RSI超买超卖", description="RSI低于30买入，高于70卖出",
-                           status="active", current_version_id=2, current_version_no=1, timeframe="1d"),
-            StrategyOption(id=3, name="布林带突破", description="价格突破布林带上下轨",
-                           status="active", current_version_id=3, current_version_no=1, timeframe="1d"),
-            StrategyOption(id=4, name="MACD金叉死叉", description="MACD金叉买入，死叉卖出",
-                           status="active", current_version_id=4, current_version_no=1, timeframe="1d"),
-        ]
+    return [
+        StrategyOption(id=1, name="双均线交叉", description="短期均线上穿长期均线买入"),
+        StrategyOption(id=2, name="RSI超买超卖", description="RSI低于30买入，高于70卖出"),
+        StrategyOption(id=3, name="布林带突破", description="价格突破布林带上下轨"),
+        StrategyOption(id=4, name="MACD金叉死叉", description="MACD金叉买入，死叉卖出"),
+    ]
 
 
 async def list_virtual_accounts() -> list[VirtualAccountOption]:
@@ -614,301 +565,72 @@ async def start_replay(
     end_date: str,
 ) -> ReplaySession:
     """
-    启动回测会话——拉快照 → 逐 bar 求值 → 模拟撮合
+    启动回测会话
 
     为什么有这个方法：
         - 业务角度：这是整个历史回放模块的核心入口。用户配置好股票、策略、账户、
-          时间范围后，点击"开始回测"触发此方法。回测引擎在指定时间范围内，
-          按照指定时间间隔，用历史行情数据逐根驱动策略运算，产生交易信号，
+          时间范围后，点击"开始回测"触发此方法。回测引擎会在指定的时间范围内，
+          按照指定的时间间隔，用历史行情数据逐根驱动策略运算，产生交易信号，
           在虚拟账户中模拟执行，最终生成完整的回测结果。
-        - 技术角度：此方法执行完整回测流程：
-          1) 拉取策略版本快照（fetch_strategy_snapshot）
-          2) 获取历史 K 线数据（目前 mock，后续对接 api_data）
-          3) 初始化虚拟账户状态
-          4) 逐 bar 拼装 context，调用 evaluate_strategy 求值
-          5) 根据买卖信号执行模拟撮合
-          6) 生成交易记录、指标、资金曲线等结果数据
-          结果缓存在内存中（_replay_results），供后续查询接口读取。
+        - 技术角度：此方法创建一个 ReplaySession 实体，持久化回测配置和状态，
+          返回 session_id 供后续所有数据查询接口使用。正式实现时需要：
+          1) 向 api_data 模块请求历史 K 线数据；
+          2) 向 strategy_engine 模块加载策略逻辑；
+          3) 初始化虚拟账户状态；
+          4) 启动异步回测引擎（可能用 Celery 等任务队列）；
+          5) 通过 WebSocket 推送回测进度。
 
     参数：
         stock_code (str):
-            - 技术含义：股票代码字符串，如 "000001.SZ"，用于获取该股票的历史 K 线。
+            - 技术含义：股票代码字符串，如 "000001.SZ"，用于向行情数据模块
+              请求该股票的历史 K 线数据。
             - 业务含义：回测的目标标的，即"用哪只股票的历史数据来验证策略"。
         strategy_id (int):
-            - 技术含义：策略 ID，用于拉取策略快照和调用 evaluate。
-            - 业务含义：用户选择要回测的量化策略。
+            - 技术含义：策略的唯一主键 ID，用于向策略引擎模块查询策略定义
+              和加载策略执行逻辑。
+            - 业务含义：用户选择要回测的量化策略，如"双均线交叉"策略。
         account_id (int):
-            - 技术含义：虚拟账户 ID，用于加载初始资金和手续费率。
-            - 业务含义：回测使用的虚拟交易账户。
+            - 技术含义：虚拟账户的唯一主键 ID，用于加载账户配置（初始资金、
+              手续费率、滑点设置等）。
+            - 业务含义：回测使用的虚拟交易账户，决定了模拟交易的初始资金和成本模型。
         timeframe (str):
-            - 技术含义：K 线周期，决定策略每轮计算的触发频率。
-            - 业务含义：回测的时间颗粒度。
+            - 技术含义：K 线周期字符串，取值为 "1m"/"5m"/"15m"/"30m"/"1h"/"4h"/"1d"，
+              同时决定了拉取 K 线的周期和策略每轮计算的触发频率。
+            - 业务含义：回测的时间颗粒度。例如 "1d" 表示每天一根 K 线，策略每天
+              计算一次信号；"5m" 表示每 5 分钟一根 K 线，策略每 5 分钟计算一次。
+              颗粒度越细，回测精度越高，但计算量和数据量也越大。
         start_date (str):
-            - 技术含义：回测起始日期 "YYYY-MM-DD"。
-            - 业务含义：从哪个时间点开始回测。
+            - 技术含义：回测起始日期，格式 "YYYY-MM-DD"，用于限定 K 线数据查询的
+              时间范围下界。
+            - 业务含义：回测的起始时间，即"从哪个时间点开始用历史数据驱动策略"。
         end_date (str):
-            - 技术含义：回测结束日期 "YYYY-MM-DD"。
-            - 业务含义：到哪个时间点停止回测。
+            - 技术含义：回测结束日期，格式 "YYYY-MM-DD"，用于限定 K 线数据查询的
+              时间范围上界。
+            - 业务含义：回测的结束时间，即"到哪个时间点停止回测"。
 
     返回值：
         ReplaySession:
-            - 技术含义：包含 session_id、配置参数、status=completed、进度信息。
-            - 业务含义：回测会话对象，session_id 用于查询所有结果数据。
+            - 技术含义：ReplaySession 模型实例，包含 session_id（会话唯一标识）、
+              所有传入的配置参数、status（会话当前状态枚举）、current_index（当前
+              已处理到的 K 线索引）、total_bars（K 线总根数）。
+            - 业务含义：回测会话对象，session_id 是后续查询 K 线、信号、交易记录、
+              指标、资金曲线等所有数据的唯一凭证。status 告知前端回测当前处于
+              运行中/已暂停/已完成/异常等状态，用于控制播放器的 UI 展示。
     """
-    global _replay_results
-
-    # 1. 拉取策略快照
-    snapshot = await fetch_strategy_snapshot(strategy_id)
-
-    # 2. 获取 K 线数据（目前使用 mock）
     ds = _get_mock_dataset()
-    kline_data: list[KlineBar] = ds["kline_data"]
-    total_bars = len(kline_data)
-
-    # 3. 获取虚拟账户配置
-    accounts = [
-        VirtualAccountOption(id=1, name="默认账户", initial_capital=1_000_000),
-        VirtualAccountOption(id=2, name="激进账户", initial_capital=500_000),
-        VirtualAccountOption(id=3, name="保守账户", initial_capital=2_000_000),
-    ]
-    account = next((a for a in accounts if a.id == account_id), accounts[0])
-    initial_capital = account.initial_capital
-    commission_rate = 0.001  # 手续费率 0.1%
-
-    # 4. 解析快照中的历史窗口要求
-    max_history_window = 20  # 默认值
-    if snapshot.compiled_meta and "max_history_window" in snapshot.compiled_meta:
-        max_history_window = snapshot.compiled_meta["max_history_window"]
-
-    # 5. 逐 bar 求值 + 模拟撮合
-    signals: list[TradeSignal] = []
-    trades: list[TradeRecord] = []
-    equity_curve: list[EquityPoint] = []
-    daily_pnl: list[DailyPnlPoint] = []
-    daily_positions: list[DailyPositionPoint] = []
-    log_entries: list[ReplayLogEntry] = []
-
-    # 模拟账户状态
-    global _evaluate_fail_logged
-    _evaluate_fail_logged = False  # 重置降级日志标志
-    cash = initial_capital
-    position = 0  # 持仓股数
-    trade_id = 0
-    last_buy_price = 0.0
-    last_buy_commission = 0.0
-    equity_peak = initial_capital
-    max_dd = 0.0
-
-    log_entries.append(ReplayLogEntry(
-        time=start_date, level="info",
-        message=f"回测启动: 策略={snapshot.buy_expression[:30]}... 账户={account.name} 初始资金=¥{initial_capital:,.0f}"
-    ))
-
-    for i in range(total_bars):
-        bar = kline_data[i]
-
-        # 跳过历史窗口不足的 bar
-        if i < max_history_window:
-            # 计算当前权益（无持仓时就是现金）
-            current_equity = cash + position * bar.close
-            equity_curve.append(EquityPoint(time=bar.time, equity=round(current_equity, 2), drawdown=0.0))
-            daily_pnl.append(DailyPnlPoint(time=bar.time, pnl=0.0))
-            daily_positions.append(DailyPositionPoint(
-                time=bar.time, quantity=position, market_value=round(position * bar.close, 2),
-                daily_pnl=0.0, daily_return_pct=0.0, total_equity=round(current_equity, 2)
-            ))
-            continue
-
-        # 拼装 context
-        history_start = max(0, i - max_history_window)
-        history_bars = kline_data[history_start:i]
-
-        context = {
-            "open": bar.open,
-            "high": bar.high,
-            "low": bar.low,
-            "close": bar.close,
-            "volume": bar.volume,
-            "amount": 0.0,
-            "ts": int(_parse_date_to_ts(bar.time)),
-            "history": {
-                "open": [b.open for b in history_bars],
-                "high": [b.high for b in history_bars],
-                "low": [b.low for b in history_bars],
-                "close": [b.close for b in history_bars],
-                "volume": [b.volume for b in history_bars],
-            }
-        }
-
-        # 调用策略求值
-        eval_req = EvaluateRequest(
-            version_id=snapshot.version_id,
-            params=snapshot.params_default if snapshot.params_default else None,
-            context=context,
-            debug=False,
-        )
-        result = await evaluate_strategy(strategy_id, eval_req)
-
-        # 模拟撮合
-        signal_name = ""
-        if result.buy and position == 0:
-            # 买入：全仓买入
-            buy_amount = cash * 0.95  # 留 5% 余量
-            quantity = int(buy_amount / bar.close / 100) * 100  # 按 100 股整数倍
-            if quantity > 0:
-                trade_price = bar.close
-                amount = quantity * trade_price
-                commission = round(amount * commission_rate, 2)
-                cash -= (amount + commission)
-                position = quantity
-                last_buy_price = trade_price
-                last_buy_commission = commission
-                trade_id += 1
-                signals.append(TradeSignal(time=bar.time, side=TradeSide.BUY, price=trade_price, quantity=quantity, signal="策略买入信号"))
-                trades.append(TradeRecord(
-                    id=trade_id, time=bar.time, side=TradeSide.BUY, stock_code=stock_code,
-                    price=trade_price, quantity=quantity, amount=amount,
-                    pnl=0.0, commission=commission, signal="策略买入信号"
-                ))
-                signal_name = f"买入 {quantity}股 @¥{trade_price:.2f}"
-                log_entries.append(ReplayLogEntry(time=bar.time, level="info", message=f"买入信号触发: {quantity}股 @¥{trade_price:.2f} 金额¥{amount:,.0f} 手续费¥{commission:.2f}"))
-
-        elif result.sell and position > 0:
-            # 卖出：全仓卖出
-            trade_price = bar.close
-            quantity = position
-            amount = quantity * trade_price
-            commission = round(amount * commission_rate, 2)
-            pnl = (trade_price - last_buy_price) * quantity - last_buy_commission - commission
-            cash += (amount - commission)
-            trade_id += 1
-            signals.append(TradeSignal(time=bar.time, side=TradeSide.SELL, price=trade_price, quantity=quantity, signal="策略卖出信号"))
-            trades.append(TradeRecord(
-                id=trade_id, time=bar.time, side=TradeSide.SELL, stock_code=stock_code,
-                price=trade_price, quantity=quantity, amount=amount,
-                pnl=round(pnl, 2), commission=commission, signal="策略卖出信号"
-            ))
-            signal_name = f"卖出 {quantity}股 @¥{trade_price:.2f} 盈亏¥{pnl:+,.2f}"
-            log_entries.append(ReplayLogEntry(
-                time=bar.time, level="info" if pnl >= 0 else "warn",
-                message=f"卖出信号触发: {quantity}股 @¥{trade_price:.2f} 盈亏¥{pnl:+,.2f}"
-            ))
-            position = 0
-
-        # 计算当日权益
-        current_equity = cash + position * bar.close
-        if current_equity > equity_peak:
-            equity_peak = current_equity
-        dd = (equity_peak - current_equity) / equity_peak * 100 if equity_peak > 0 else 0
-        if dd > max_dd:
-            max_dd = dd
-
-        equity_curve.append(EquityPoint(time=bar.time, equity=round(current_equity, 2), drawdown=round(-dd, 2)))
-
-        # 每日盈亏
-        prev_equity = equity_curve[-2].equity if len(equity_curve) >= 2 else initial_capital
-        daily_pnl_val = current_equity - prev_equity
-        buy_amt = trades[-1].amount if trades and trades[-1].side == TradeSide.BUY and trades[-1].time == bar.time else 0
-        sell_amt = trades[-1].amount if trades and trades[-1].side == TradeSide.SELL and trades[-1].time == bar.time else 0
-        daily_pnl.append(DailyPnlPoint(
-            time=bar.time, pnl=round(daily_pnl_val, 2),
-            buy_amount=round(buy_amt, 2), sell_amount=round(sell_amt, 2)
-        ))
-
-        # 每日持仓
-        daily_positions.append(DailyPositionPoint(
-            time=bar.time, quantity=position, market_value=round(position * bar.close, 2),
-            daily_pnl=round(daily_pnl_val, 2),
-            daily_return_pct=round(daily_pnl_val / prev_equity * 100, 4) if prev_equity > 0 else 0,
-            total_equity=round(current_equity, 2)
-        ))
-
-    # 6. 计算回测指标
-    total_return = (current_equity - initial_capital) / initial_capital * 100
-    # 年化（按 242 个交易日算）
-    trading_days_count = len(kline_data)
-    years = trading_days_count / 242
-    annual_return = ((1 + total_return / 100) ** (1 / years) - 1) * 100 if years > 0 else 0
-
-    # 胜率 & 盈亏比
-    sell_trades = [t for t in trades if t.side == TradeSide.SELL]
-    win_trades = [t for t in sell_trades if t.pnl > 0]
-    lose_trades = [t for t in sell_trades if t.pnl <= 0]
-    win_rate = len(win_trades) / len(sell_trades) * 100 if sell_trades else 0
-    avg_win = sum(t.pnl for t in win_trades) / len(win_trades) if win_trades else 0
-    avg_loss = abs(sum(t.pnl for t in lose_trades) / len(lose_trades)) if lose_trades else 1
-    profit_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0
-    total_pnl = sum(t.pnl for t in sell_trades)
-
-    # 简化的夏普比率（假设无风险利率 3%）
-    daily_returns = [equity_curve[i+1].equity / equity_curve[i].equity - 1 for i in range(len(equity_curve) - 1)] if len(equity_curve) > 1 else [0]
-    avg_daily_return = sum(daily_returns) / len(daily_returns)
-    std_daily_return = (sum((r - avg_daily_return) ** 2 for r in daily_returns) / len(daily_returns)) ** 0.5 if len(daily_returns) > 1 else 1
-    sharpe = (avg_daily_return * 242 - 0.03) / (std_daily_return * (242 ** 0.5)) if std_daily_return > 0 else 0
-
-    # 基准数据（使用 mock 数据集中的基准）
-    benchmark_data = ds["benchmark_data"]
-    strategy_return = ds["strategy_return_data"]
-
-    # 计算基准相关指标
-    benchmark_return = benchmark_data[-1].return_pct if benchmark_data else 0
-    alpha = total_return / 100 - benchmark_return / 100 if benchmark_return != 0 else 0
-    beta = 1.0  # 简化
-    sortino = sharpe * 1.5 if sharpe > 0 else sharpe * 0.8  # 简化近似
-    strategy_volatility = std_daily_return * (242 ** 0.5) * 100
-    benchmark_volatility = 0.0  # 需要基准日收益率标准差
-
-    metrics = ReplayMetrics(
-        total_return=round(total_return, 2),
-        annual_return=round(annual_return, 2),
-        max_drawdown=round(-max_dd, 2),
-        sharpe_ratio=round(sharpe, 2),
-        win_rate=round(win_rate, 1),
-        profit_loss_ratio=round(profit_loss_ratio, 2),
-        trade_count=len(sell_trades),
-        total_pnl=round(total_pnl, 2),
-        benchmark_return=round(benchmark_return, 2),
-        alpha=round(alpha, 3),
-        beta=round(beta, 3),
-        sortino_ratio=round(sortino, 2),
-        information_ratio=round(sharpe * 0.8, 2),
-        strategy_volatility=round(strategy_volatility, 2),
-        benchmark_volatility=round(benchmark_volatility, 2),
+    total_bars = len(ds["kline_data"])
+    return ReplaySession(
+        session_id=1,
+        stock_code=stock_code,
+        strategy_id=strategy_id,
+        account_id=account_id,
+        timeframe=timeframe,
+        start_date=start_date,
+        end_date=end_date,
+        status=ReplayStatus.COMPLETED,
+        current_index=total_bars,
+        total_bars=total_bars,
     )
-
-    log_entries.append(ReplayLogEntry(
-        time=end_date, level="info",
-        message=f"回测完成: 总收益{total_return:+.2f}% 最大回撤{-max_dd:.2f}% 交易{len(sell_trades)}次 胜率{win_rate:.0f}%"
-    ))
-
-    # 7. 缓存结果
-    session_id = 1
-    _replay_results[session_id] = {
-        "session": ReplaySession(
-            session_id=session_id,
-            stock_code=stock_code,
-            strategy_id=strategy_id,
-            account_id=account_id,
-            timeframe=timeframe,
-            start_date=start_date,
-            end_date=end_date,
-            status=ReplayStatus.COMPLETED,
-            current_index=total_bars,
-            total_bars=total_bars,
-        ),
-        "kline_data": kline_data,
-        "signals": signals,
-        "trades": trades,
-        "metrics": metrics,
-        "equity_data": equity_curve,
-        "benchmark_data": benchmark_data,
-        "strategy_return_data": strategy_return,
-        "daily_pnl_data": daily_pnl,
-        "daily_position_data": daily_positions,
-        "log_entries": log_entries,
-    }
-
-    return _replay_results[session_id]["session"]
 
 
 async def get_session(session_id: int) -> ReplaySession:
@@ -1072,8 +794,6 @@ async def get_kline_data(session_id: int) -> list[KlineBar]:
               买卖信号标记的时间字段会与 K 线的 time 字段对齐，精确定位在对应的
               K 线上方/下方。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["kline_data"]
     ds = _get_mock_dataset()
     return ds["kline_data"]
 
@@ -1105,8 +825,6 @@ async def get_trade_signals(session_id: int) -> list[TradeSignal]:
               K 线图上的标记点，买入信号显示为红色向上箭头（K 线下方），
               卖出信号显示为绿色向下箭头（K 线上方），附带信号名称文字。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["signals"]
     ds = _get_mock_dataset()
     return ds["signals"]
 
@@ -1141,8 +859,6 @@ async def get_trade_records(session_id: int) -> list[TradeRecord]:
               每行的盈亏列用红色/绿色标注正负值（中国惯例红涨绿跌），
               方向列用标签标注买入/卖出。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["trades"]
     ds = _get_mock_dataset()
     return ds["trades"]
 
@@ -1180,8 +896,6 @@ async def get_metrics(session_id: int) -> ReplayMetrics:
               夏普比率 > 1 标注"优秀"，0.5~1 标注"良好"；
               胜率 > 50% 显示红色，< 50% 显示绿色。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["metrics"]
     ds = _get_mock_dataset()
     return ds["metrics"]
 
@@ -1214,8 +928,6 @@ async def get_equity_curve(session_id: int) -> list[EquityPoint]:
               随每笔交易盈亏波动；回撤曲线记录每个时点相对历史最高净值的回退幅度，
               其最小值即为"最大回撤"。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["equity_data"]
     ds = _get_mock_dataset()
     return ds["equity_data"]
 
@@ -1243,8 +955,6 @@ async def get_benchmark_data(session_id: int) -> list[BenchmarkPoint]:
             - 业务含义：基准指数在回测期间的累计收益序列。与策略收益曲线叠加后，
               两者的差距即为超额收益（Alpha）。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["benchmark_data"]
     ds = _get_mock_dataset()
     return ds["benchmark_data"]
 
@@ -1272,8 +982,6 @@ async def get_strategy_return_data(session_id: int) -> list[StrategyReturnPoint]
             - 业务含义：策略在回测期间的累计收益序列。与基准收益叠加后可计算
               各时点的超额收益。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["strategy_return_data"]
     ds = _get_mock_dataset()
     return ds["strategy_return_data"]
 
@@ -1302,8 +1010,6 @@ async def get_daily_pnl(session_id: int) -> list[DailyPnlPoint]:
               pnl（当日盈亏金额）、buy_amount（当日买入金额）、sell_amount（当日卖出金额）。
             - 业务含义：回测期间每天的盈亏金额和买卖金额序列。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["daily_pnl_data"]
     ds = _get_mock_dataset()
     return ds["daily_pnl_data"]
 
@@ -1331,8 +1037,6 @@ async def get_daily_positions(session_id: int) -> list[DailyPositionPoint]:
               daily_return_pct（当日收益率%）、total_equity（账户总资产）。
             - 业务含义：回测期间每天的持仓快照和收益数据。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["daily_position_data"]
     ds = _get_mock_dataset()
     return ds["daily_position_data"]
 
@@ -1359,186 +1063,5 @@ async def get_replay_logs(session_id: int) -> list[ReplayLogEntry]:
               level（级别：info/warn/error）、message（日志内容）。
             - 业务含义：回测引擎的完整运行记录，包含启动、信号、交易、完成等关键事件。
     """
-    if session_id in _replay_results:
-        return _replay_results[session_id]["log_entries"]
     ds = _get_mock_dataset()
     return ds["log_entries"]
-
-
-# ============================================================
-# 策略引擎代理接口
-# ============================================================
-
-async def fetch_strategy_snapshot(strategy_id: int, version_no: int | None = None) -> StrategyVersionSnapshot:
-    """
-    拉取策略版本快照——转发策略引擎 GET /api/strategy/{id}/versions/{version_no}
-
-    为什么有这个方法：
-        - 业务角度：回测引擎在启动时需要知道策略的完整定义（买卖表达式、参数、历史窗口），
-          才能逐 bar 求值。快照是策略引擎发布的不可变版本，保证回测结果可复现。
-        - 技术角度：回测引擎根据 compiled_meta.max_history_window 维护滑动窗口，
-          根据 params_default 使用默认参数，根据 buy/sell_expression 理解策略逻辑。
-          此接口在 start_replay 时调用一次，结果缓存在回测会话中。
-
-    参数：
-        strategy_id (int):
-            - 技术含义：策略唯一标识，作为 URL 路径参数传给策略引擎。
-            - 业务含义：用户在前端选择的那个策略。
-        version_no (int | None):
-            - 技术含义：版本号，None 时使用策略的 current_version_no。
-            - 业务含义：锁定具体策略版本，保证回测可复现。
-
-    返回值：
-        StrategyVersionSnapshot:
-            - 技术含义：包含 version_id、version_no、buy_expression、sell_expression、
-              params_default、params_schema、compiled_meta 的完整快照。
-            - 业务含义：策略在该版本下的完整定义，回测引擎据此拼装 evaluate 请求。
-    """
-    settings = get_settings()
-    base_url = settings.STRATEGY_ENGINE_URL
-
-    # 如果没有指定版本号，先查策略详情拿到当前版本号
-    if version_no is None:
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{base_url}/api/strategy/{strategy_id}")
-                resp.raise_for_status()
-                data = resp.json()
-                strategy_data = data.get("data", data) if isinstance(data, dict) else data
-                version_no = strategy_data.get("current_version_no")
-                if version_no is None:
-                    raise ValueError(f"策略 {strategy_id} 没有已发布的版本")
-        except Exception as e:
-            logger.warning(f"获取策略详情失败，降级返回 mock 快照: {e}")
-            return _mock_strategy_snapshot(strategy_id)
-
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{base_url}/api/strategy/{strategy_id}/versions/{version_no}")
-            resp.raise_for_status()
-            data = resp.json()
-            ver = data.get("data", data) if isinstance(data, dict) else data
-            return StrategyVersionSnapshot(
-                version_id=ver["version_id"],
-                version_no=ver["version_no"],
-                buy_expression=ver.get("buy_expression", ""),
-                sell_expression=ver.get("sell_expression", ""),
-                params_default=ver.get("params_default", {}),
-                params_schema=ver.get("params_schema"),
-                compiled_meta=ver.get("compiled_meta"),
-            )
-    except Exception as e:
-        logger.warning(f"获取策略快照失败，降级返回 mock 快照: {e}")
-        return _mock_strategy_snapshot(strategy_id)
-
-
-async def evaluate_strategy(strategy_id: int, req: EvaluateRequest) -> EvaluateResult:
-    """
-    策略单点求值——转发策略引擎 POST /api/strategy/{id}/evaluate
-
-    为什么有这个方法：
-        - 业务角度：回测的核心循环是"逐 bar 求值"——每根 K 线都调用一次 evaluate，
-          判断策略是否产生买入/卖出信号。这是回测引擎与策略引擎交互的核心接口。
-        - 技术角度：回测引擎拼装 context（当前 bar 数据 + 历史窗口），
-          调用此接口获得 {buy, sell} 信号，然后执行模拟撮合。
-          使用与实盘完全相同的 evaluate 接口，保证回测与实盘策略行为一致。
-
-    参数：
-        strategy_id (int):
-            - 技术含义：策略 ID，作为 URL 路径参数传给策略引擎。
-            - 业务含义：对哪个策略进行求值。
-        req (EvaluateRequest):
-            - 技术含义：包含 version_id（版本ID）、params（覆盖参数）、
-              context（当前 bar 数据 + 历史窗口）、debug（是否返回因子值）。
-            - 业务含义：告诉策略引擎"在当前这个市场状态下，策略应该买还是卖"。
-
-    返回值：
-        EvaluateResult:
-            - 技术含义：包含 strategy_id、version_id、version_no、ts、buy、sell、
-              factors（debug时）、elapsed_ms。
-            - 业务含义：策略在给定市场状态下的买卖决策。buy=true 表示触发买入信号，
-              sell=true 表示触发卖出信号。回测引擎据此执行模拟交易。
-    """
-    settings = get_settings()
-    base_url = settings.STRATEGY_ENGINE_URL
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(
-                f"{base_url}/api/strategy/{strategy_id}/evaluate",
-                json=req.model_dump(exclude_none=True),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            result = data.get("data", data) if isinstance(data, dict) else data
-            return EvaluateResult(
-                strategy_id=result.get("strategy_id", strategy_id),
-                version_id=result.get("version_id", 0),
-                version_no=result.get("version_no", 0),
-                ts=result.get("ts", req.context.ts),
-                buy=result.get("buy", False),
-                sell=result.get("sell", False),
-                factors=result.get("factors"),
-                elapsed_ms=result.get("elapsed_ms", 0),
-            )
-    except Exception as e:
-        if not _evaluate_fail_logged:
-            logger.warning(f"策略求值失败，降级返回 mock 结果: {e}（后续同类错误静默）")
-            _evaluate_fail_logged = True
-        return _mock_evaluate_result(strategy_id, req)
-
-
-def _mock_strategy_snapshot(strategy_id: int) -> StrategyVersionSnapshot:
-    """策略引擎不可用时的降级 mock 快照"""
-    mock_snapshots = {
-        1: ("CROSS(MA(close,5), MA(close,20))", "CROSS(MA(close,20), MA(close,5))"),
-        2: ("RSI(close,14) < 30", "RSI(close,14) > 70"),
-        3: ("close < BOLL_LOWER(close,20,2)", "close > BOLL_UPPER(close,20,2)"),
-        4: ("CROSS(MACD_DIFF(close,12,26,9), MACD_DEA(close,12,26,9))",
-            "CROSS(MACD_DEA(close,12,26,9), MACD_DIFF(close,12,26,9))"),
-    }
-    buy_expr, sell_expr = mock_snapshots.get(
-        strategy_id, ("close > MA(close,5)", "close < MA(close,5)")
-    )
-    return StrategyVersionSnapshot(
-        version_id=strategy_id * 100,
-        version_no=1,
-        buy_expression=buy_expr,
-        sell_expression=sell_expr,
-        params_default={},
-        params_schema=None,
-        compiled_meta={"max_history_window": 20, "required_data": {"ohlcv": {"fields": ["open","high","low","close","volume"], "history_window": 20}}},
-    )
-
-
-def _mock_evaluate_result(strategy_id: int, req: EvaluateRequest) -> EvaluateResult:
-    """策略引擎不可用时的降级 mock 求值结果——基于简单规则模拟"""
-    # 简单模拟：用 mock 数据集中预定义的信号
-    ds = _get_mock_dataset()
-    ts = req.context.ts
-    # 在 mock 信号中查找匹配的时间点
-    for signal in ds["signals"]:
-        # 信号时间是 "2024-02-05" 格式，转成毫秒戳比较
-        from datetime import datetime
-        signal_ts = int(datetime.strptime(signal.time, "%Y-%m-%d").timestamp() * 1000)
-        if signal_ts == ts:
-            return EvaluateResult(
-                strategy_id=strategy_id,
-                version_id=strategy_id * 100,
-                version_no=1,
-                ts=ts,
-                buy=signal.side == TradeSide.BUY,
-                sell=signal.side == TradeSide.SELL,
-                factors=None,
-                elapsed_ms=1,
-            )
-    # 没有匹配的信号，返回无信号
-    return EvaluateResult(
-        strategy_id=strategy_id,
-        version_id=strategy_id * 100,
-        version_no=1,
-        ts=ts,
-        buy=False,
-        sell=False,
-        factors=None,
-        elapsed_ms=1,
-    )

@@ -23,9 +23,6 @@ class Settings(BaseSettings):
     OKX_API_SECRET: str = ""
     OKX_PASSPHRASE: str = ""
 
-    # 策略引擎（模块3）
-    STRATEGY_ENGINE_URL: str = "http://localhost:8000"  # 同进程，走本地路由
-
     # 安全
     ENCRYPTION_KEY: str = ""
 
