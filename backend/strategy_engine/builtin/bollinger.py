@@ -8,9 +8,57 @@
 参数：
 - period: 布林带计算周期（默认 20）
 - std_dev: 标准差倍数（默认 2，即上下轨距中轨 2σ）
+- buy_ratio: 买入仓位比例（默认 0.9）
 
 特点：突破策略，在低波动期后启动的趋势中表现好。
 """
+
+STRATEGY_NAME = "布林带突破"
+STRATEGY_CODE_NAME = "BOLLINGER"
+
+PARAM_SCHEMA = {
+    "fields": [
+        {
+            "key": "period",
+            "type": "int",
+            "label": "布林带周期",
+            "description": "布林带计算窗口",
+            "default": 20,
+            "min": 3,
+            "max": 200,
+            "required": True,
+            "group": "布林带参数",
+        },
+        {
+            "key": "std_dev",
+            "type": "float",
+            "label": "标准差倍数",
+            "description": "上下轨距中轨的 σ 倍数",
+            "default": 2.0,
+            "min": 0.5,
+            "max": 5.0,
+            "required": True,
+            "group": "布林带参数",
+        },
+        {
+            "key": "buy_ratio",
+            "type": "float",
+            "label": "买入仓位比例",
+            "description": "买入占总资金比例",
+            "default": 0.9,
+            "min": 0.01,
+            "max": 1.0,
+            "required": True,
+            "group": "交易参数",
+        },
+    ]
+}
+
+DEFAULT_PARAMETERS = {
+    "period": 20,
+    "std_dev": 2.0,
+    "buy_ratio": 0.9,
+}
 
 STRATEGY_CODE = """
 # 布林带突破策略

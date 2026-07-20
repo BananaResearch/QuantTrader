@@ -12,6 +12,53 @@
 特点：经典趋势跟随策略，在趋势行情中表现好，震荡行情中频繁假信号。
 """
 
+STRATEGY_NAME = "双均线交叉"
+STRATEGY_CODE_NAME = "DOUBLE_MA"
+
+PARAM_SCHEMA = {
+    "fields": [
+        {
+            "key": "short_window",
+            "type": "int",
+            "label": "短期均线周期",
+            "description": "短期均线计算窗口",
+            "default": 5,
+            "min": 1,
+            "max": 200,
+            "required": True,
+            "group": "均线参数",
+        },
+        {
+            "key": "long_window",
+            "type": "int",
+            "label": "长期均线周期",
+            "description": "长期均线计算窗口",
+            "default": 10,
+            "min": 2,
+            "max": 200,
+            "required": True,
+            "group": "均线参数",
+        },
+        {
+            "key": "buy_ratio",
+            "type": "float",
+            "label": "买入仓位比例",
+            "description": "买入占总资金比例（留部分现金应对手续费）",
+            "default": 0.95,
+            "min": 0.01,
+            "max": 1.0,
+            "required": True,
+            "group": "交易参数",
+        },
+    ]
+}
+
+DEFAULT_PARAMETERS = {
+    "short_window": 5,
+    "long_window": 10,
+    "buy_ratio": 0.95,
+}
+
 STRATEGY_CODE = """
 # 双均线交叉策略
 # 参数通过 g 注入：g.short_window / g.long_window / g.buy_ratio

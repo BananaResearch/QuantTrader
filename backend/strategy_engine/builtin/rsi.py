@@ -13,6 +13,65 @@
 特点：均值回归策略，适合震荡行情；趋势行情中会频繁止损。
 """
 
+STRATEGY_NAME = "RSI 超买超卖"
+STRATEGY_CODE_NAME = "RSI"
+
+PARAM_SCHEMA = {
+    "fields": [
+        {
+            "key": "period",
+            "type": "int",
+            "label": "RSI 周期",
+            "description": "RSI 计算窗口",
+            "default": 14,
+            "min": 2,
+            "max": 200,
+            "required": True,
+            "group": "RSI 参数",
+        },
+        {
+            "key": "oversold",
+            "type": "int",
+            "label": "超卖阈值",
+            "description": "RSI 低于此值视为超卖（买入信号）",
+            "default": 30,
+            "min": 0,
+            "max": 100,
+            "required": True,
+            "group": "RSI 参数",
+        },
+        {
+            "key": "overbought",
+            "type": "int",
+            "label": "超买阈值",
+            "description": "RSI 高于此值视为超买（卖出信号）",
+            "default": 70,
+            "min": 0,
+            "max": 100,
+            "required": True,
+            "group": "RSI 参数",
+        },
+        {
+            "key": "buy_ratio",
+            "type": "float",
+            "label": "买入仓位比例",
+            "description": "买入占总资金比例",
+            "default": 0.5,
+            "min": 0.01,
+            "max": 1.0,
+            "required": True,
+            "group": "交易参数",
+        },
+    ]
+}
+
+DEFAULT_PARAMETERS = {
+    "period": 14,
+    "oversold": 30,
+    "overbought": 70,
+    "buy_ratio": 0.5,
+}
+
 STRATEGY_CODE = """
 # RSI 超买超卖策略
 # 参数通过 g 注入：g.period / g.oversold / g.overbought / g.buy_ratio

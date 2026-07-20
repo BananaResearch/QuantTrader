@@ -13,6 +13,65 @@
 特点：经典趋势指标，金叉死叉略滞后于顶底；适合中长周期。
 """
 
+STRATEGY_NAME = "MACD 金叉死叉"
+STRATEGY_CODE_NAME = "MACD"
+
+PARAM_SCHEMA = {
+    "fields": [
+        {
+            "key": "fast",
+            "type": "int",
+            "label": "快线周期",
+            "description": "MACD 快线 EMA 周期",
+            "default": 12,
+            "min": 2,
+            "max": 200,
+            "required": True,
+            "group": "MACD 参数",
+        },
+        {
+            "key": "slow",
+            "type": "int",
+            "label": "慢线周期",
+            "description": "MACD 慢线 EMA 周期（需 > fast）",
+            "default": 26,
+            "min": 3,
+            "max": 200,
+            "required": True,
+            "group": "MACD 参数",
+        },
+        {
+            "key": "signal",
+            "type": "int",
+            "label": "信号线周期",
+            "description": "MACD 信号线 EMA 周期",
+            "default": 9,
+            "min": 1,
+            "max": 100,
+            "required": True,
+            "group": "MACD 参数",
+        },
+        {
+            "key": "buy_ratio",
+            "type": "float",
+            "label": "买入仓位比例",
+            "description": "买入占总资金比例",
+            "default": 0.9,
+            "min": 0.01,
+            "max": 1.0,
+            "required": True,
+            "group": "交易参数",
+        },
+    ]
+}
+
+DEFAULT_PARAMETERS = {
+    "fast": 12,
+    "slow": 26,
+    "signal": 9,
+    "buy_ratio": 0.9,
+}
+
 STRATEGY_CODE = """
 # MACD 金叉死叉策略
 # 参数通过 g 注入：g.fast / g.slow / g.signal / g.buy_ratio

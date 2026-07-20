@@ -13,7 +13,7 @@
 
 import { useEffect, useRef } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import type { editor, MarkerData } from 'monaco-editor'
+import type { editor } from 'monaco-editor'
 
 import type { ValidationIssue } from '../types/strategy'
 
@@ -22,6 +22,8 @@ interface CodeEditorProps {
   onChange?: (value: string) => void
   /** 校验问题：error 严重级别标记为红色波浪线 */
   errors?: ValidationIssue[]
+  /** 校验问题：warning 严重级别标记为黄色波浪线 */
+  warnings?: ValidationIssue[]
   /** 只读模式（如查看内置策略） */
   readOnly?: boolean
   /** 最小高度（默认 480px） */
@@ -32,6 +34,7 @@ export function CodeEditor({
   value,
   onChange,
   errors = [],
+  warnings = [],
   readOnly = false,
   minHeight = 480,
 }: CodeEditorProps) {
@@ -67,18 +70,18 @@ export function CodeEditor({
     })
     monaco.editor.setTheme('quantflow-dark')
 
-    // 应用初始 markers
-    updateMarkers(ed, monaco, errors)
+    // 应用初始 markers（errors + warnings）
+    updateMarkers(ed, monaco, errors, warnings)
   }
 
-  // errors 变化时更新 markers
+  // errors / warnings 变化时更新 markers
   useEffect(() => {
     if (!editorRef.current) return
     // @monaco-editor/react 已经把 monaco 注入到 window.monaco
     const monaco = (window as unknown as { monaco?: typeof import('monaco-editor') }).monaco
     if (!monaco) return
-    updateMarkers(editorRef.current, monaco, errors)
-  }, [errors])
+    updateMarkers(editorRef.current, monaco, errors, warnings)
+  }, [errors, warnings])
 
   return (
     <div className="border border-outline-variant/20 rounded-md overflow-hidden bg-surface-container-lowest">
@@ -119,28 +122,35 @@ export function CodeEditor({
 
 /**
  * 把 ValidationIssue 列表转换为 Monaco marker 并更新到 editor model。
+ * errors → MarkerSeverity.Error（红色）
+ * warnings → MarkerSeverity.Warning（黄色）
  */
 function updateMarkers(
   ed: editor.IStandaloneCodeEditor,
   monaco: typeof import('monaco-editor'),
-  issues: ValidationIssue[],
+  errors: ValidationIssue[],
+  warnings: ValidationIssue[],
 ): void {
   const model = ed.getModel()
   if (!model) return
 
-  const markers: MarkerData[] = issues
-    .filter((i) => i.line != null && i.line > 0)
-    .map((i) => ({
-      startLineNumber: i.line!,
-      startColumn: i.column ?? 1,
-      endLineNumber: i.line!,
-      endColumn: (i.column ?? 1) + 100, // 标到行尾
-      message: i.message,
-      severity:
-        i.severity === 'error'
-          ? monaco.MarkerSeverity.Error
-          : monaco.MarkerSeverity.Warning,
-    }))
+  const toMarker = (
+    issue: ValidationIssue,
+    severity: 'error' | 'warning',
+  ): editor.IMarkerData => ({
+    startLineNumber: issue.line ?? 1,
+    startColumn: issue.column ?? 1,
+    endLineNumber: issue.line ?? 1,
+    endColumn: (issue.column ?? 1) + 100, // 标到行尾
+    message: issue.message,
+    severity:
+      severity === 'error' ? monaco.MarkerSeverity.Error : monaco.MarkerSeverity.Warning,
+  })
+
+  const markers: editor.IMarkerData[] = [
+    ...errors.filter((i) => i.line != null && i.line > 0).map((i) => toMarker(i, 'error')),
+    ...warnings.filter((i) => i.line != null && i.line > 0).map((i) => toMarker(i, 'warning')),
+  ]
 
   monaco.editor.setModelMarkers(model, 'strategy-engine', markers)
 }
