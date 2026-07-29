@@ -66,6 +66,7 @@ class ParamFieldSchema(BaseModel):
     default: Optional[Any] = None
     min: Optional[float] = None
     max: Optional[float] = None
+    max_length: Optional[int] = Field(None, gt=0, le=4096, description="string 类型最大长度")
     options: Optional[list[dict[str, Any]]] = None  # [{label, value}]
     item_type: Optional[ParamFieldType] = Field(None, description="仅 list 类型使用")
     group: Optional[str] = Field(None, max_length=32, description="分组名称")

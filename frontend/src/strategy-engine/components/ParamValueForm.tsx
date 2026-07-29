@@ -127,6 +127,7 @@ function FieldInput({ field, value, onChange, error, disabled }: FieldInputProps
         <input
           type="text"
           value={(value as string) ?? ''}
+          maxLength={field.max_length}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           className={`${inputClass} ${error ? 'border-error/50' : 'border-outline-variant/30'}`}
@@ -134,18 +135,19 @@ function FieldInput({ field, value, onChange, error, disabled }: FieldInputProps
       )}
 
       {field.type === 'bool' && (
-        <button
-          type="button"
-          onClick={() => onChange(!value)}
-          disabled={disabled}
-          className={`h-9 px-4 rounded-md border text-sm font-medium transition-colors disabled:opacity-50 ${
-            value
-              ? 'bg-primary/20 border-primary/30 text-primary'
-              : 'bg-surface border-outline-variant/30 text-on-surface-variant'
-          }`}
-        >
-          {value ? '是' : '否'}
-        </button>
+        <label className="flex items-center gap-2 h-9 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={value === true}
+            onChange={(e) => onChange(e.target.checked)}
+            disabled={disabled}
+            className="w-4 h-4 rounded border-outline-variant text-primary focus:ring-primary disabled:opacity-50"
+            aria-label={field.label}
+          />
+          <span className="text-sm text-on-surface">
+            {value === true ? '是' : '否'}
+          </span>
+        </label>
       )}
 
       {field.type === 'select' && (

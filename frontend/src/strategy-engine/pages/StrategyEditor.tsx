@@ -457,6 +457,71 @@ function StrategyEditorInner() {
     handleDryRunRef.current = handleDryRun
   })
 
+  // === BUG-STR-004：WebSocket 订阅 code_updated ===
+  // 仅 edit 模式 + 已有 strategyId 时订阅；断线指数退避重连；收到推送时刷新 code_content
+  useEffect(() => {
+    if (mode !== 'edit' || strategyId == null) return
+
+    let ws: WebSocket | null = null
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retryDelay = 1000 // 初始 1s
+    let closed = false
+
+    const connect = () => {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const url = `${proto}//${window.location.host}/ws/strategy/${strategyId}`
+      ws = new WebSocket(url)
+
+      ws.onmessage = async (evt) => {
+        try {
+          const msg = JSON.parse(evt.data)
+          if (msg.type === 'code_updated') {
+            // 本地有未保存改动时不自动覆盖，仅提示
+            if (isDirty) {
+              toast('info', '策略已被他人更新，请保存或刷新')
+              return
+            }
+            try {
+              const s = await getStrategy(strategyId)
+              setCode(s.code_content ?? DEFAULT_CODE_TEMPLATE)
+              setParameters(s.parameters ?? null)
+              toast('info', '策略已被他人更新')
+            } catch {
+              toast('error', '拉取最新策略失败')
+            }
+          }
+        } catch {
+          // ping/pong 等非 JSON 消息忽略
+        }
+      }
+
+      ws.onclose = () => {
+        if (closed) return
+        // 指数退避重连，最大 30s
+        retryTimer = setTimeout(() => {
+          retryDelay = Math.min(retryDelay * 2, 30000)
+          connect()
+        }, retryDelay)
+      }
+
+      ws.onerror = () => {
+        // 错误由 onclose 统一处理
+        ws?.close()
+      }
+    }
+
+    connect()
+
+    return () => {
+      closed = true
+      if (retryTimer) clearTimeout(retryTimer)
+      if (ws) {
+        ws.onclose = null
+        ws.close()
+      }
+    }
+  }, [mode, strategyId, isDirty, toast])
+
   // === 保存 ===
   const handleSave = useCallback(async () => {
     if (!name.trim()) {
@@ -499,7 +564,12 @@ function StrategyEditorInner() {
         toast('success', '策略已更新')
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '保存失败'
+      // BUG-STR-001：优先读取后端返回的 detail / message，避免只显示 axios 默认文本
+      const axErr = err as { response?: { data?: { detail?: string; message?: string } } }
+      const msg =
+        axErr?.response?.data?.detail ??
+        axErr?.response?.data?.message ??
+        (err instanceof Error ? err.message : '保存失败')
       toast('error', msg)
     } finally {
       setSaving(false)
@@ -562,6 +632,11 @@ function StrategyEditorInner() {
             <div>
               <h1 className="text-lg font-semibold text-on-surface">
                 {mode === 'create' ? '新建策略' : name || '未命名策略'}
+                {mode === 'edit' && codeField && (
+                  <code className="ml-2 px-1.5 py-0.5 text-xs rounded border border-outline-variant/40 bg-surface-container text-on-surface-variant font-mono">
+                    {codeField}
+                  </code>
+                )}
                 {mode === 'edit' && (
                   <span
                     className={`ml-2 px-1.5 py-0.5 text-xs rounded-full border ${
@@ -646,6 +721,7 @@ function StrategyEditorInner() {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="如：双均线交叉"
+                    maxLength={128}
                     className={inputClass}
                     aria-label="策略名称"
                   />
@@ -666,6 +742,7 @@ function StrategyEditorInner() {
                     }}
                     placeholder="如：DOUBLE_MA"
                     disabled={mode === 'edit'}
+                    maxLength={64}
                     aria-label="策略编码"
                     className={`${inputClass} font-mono ${
                       codeFieldFromTemplate ? 'border-warning/50' : ''
@@ -705,6 +782,7 @@ function StrategyEditorInner() {
                     value={version}
                     onChange={(e) => setVersion(e.target.value)}
                     placeholder="1.0.0"
+                    maxLength={32}
                     className={`${inputClass} font-mono`}
                     aria-label="版本号"
                   />

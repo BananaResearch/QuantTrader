@@ -41,6 +41,8 @@ export interface ParamField {
   default?: unknown
   min?: number
   max?: number
+  /** string 类型最大长度（BUG-STR-013） */
+  max_length?: number
   /** select 类型选项 */
   options?: { label: string; value: string | number }[]
   /** list 类型元素类型 */

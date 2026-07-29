@@ -109,6 +109,14 @@ async def create_strategy(
             detail=f"策略编码 {data.code} 已存在",
         )
 
+    # BUG-STR-012/013：基于 param_schema 校验 parameters（若提供）
+    if data.param_schema is not None and data.parameters:
+        from .service import StrategyService
+        try:
+            StrategyService.validate_param_values(data.param_schema, data.parameters)
+        except InvalidParamValue as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     create_data = data.model_dump()
     if data.param_schema is not None:
         create_data["param_schema"] = data.param_schema.model_dump()
@@ -444,10 +452,15 @@ async def dry_run_strategy(
     except InvalidStrategyError as e:
         raise HTTPException(status_code=e.http_status, detail=str(e))
 
+    # BUG-STR-009：同日或短区间 dry-run 可能返回空 bars，给业务化提示
+    message = "试运行完成"
+    if result.total_bars == 0:
+        message = "试运行完成（区间内无足够 K 线，结果为空）"
+
     return {
         "success": True,
         "data": result.model_dump(),
-        "message": "试运行完成",
+        "message": message,
     }
 
 
@@ -485,21 +498,43 @@ async def update_strategy(
         raise HTTPException(status_code=404, detail="策略不存在")
 
     update_data = data.model_dump(exclude_unset=True)
-    if "param_schema" in update_data and update_data["param_schema"] is not None:
-        update_data["param_schema"] = update_data["param_schema"].model_dump()
+
+    # BUG-STR-012/013：当 parameters 更新时，基于 strategy.param_schema 校验
+    if "parameters" in update_data and update_data["parameters"] and strategy.param_schema:
+        from .schemas import ParamSchema
+        from .service import StrategyService
+        schema = ParamSchema.model_validate(strategy.param_schema)
+        try:
+            StrategyService.validate_param_values(schema, update_data["parameters"])
+        except InvalidParamValue as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    # 记录 code_content 变更前的值（用于 BUG-STR-004 广播 diff 判断）
+    code_before = strategy.code_content
 
     updated = await repo.update(strategy_id, update_data)
 
-    from .runtime.websocket import get_ws_manager
-    manager = get_ws_manager()
-    await manager.broadcast(
-        strategy_id,
-        {
-            "type": "code_updated",
-            "strategy_id": strategy_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
-    )
+    # BUG-STR-004：仅在 code_content 实际变化时广播；广播异常隔离不影响主流程
+    code_after = updated.code_content if hasattr(updated, "code_content") else code_before
+    if "code_content" in update_data and code_after != code_before:
+        import logging
+        from .runtime.websocket import get_ws_manager
+        logger = logging.getLogger(__name__)
+        try:
+            manager = get_ws_manager()
+            await manager.broadcast(
+                strategy_id,
+                {
+                    "type": "code_updated",
+                    "strategy_id": strategy_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception as ws_err:
+            logger.warning(
+                "WebSocket broadcast failed for strategy_id=%d: %s",
+                strategy_id, ws_err,
+            )
 
     return {
         "success": True,

@@ -116,6 +116,22 @@ class StrategyService:
                 if field.max is not None and float(value) > field.max:
                     raise InvalidParamValue(f"参数 {key} 大于最大值 {field.max}")
 
+            # bool（严格类型校验，BUG-STR-014）
+            if field.type == ParamFieldType.BOOL:
+                if type(value) is not bool:
+                    raise InvalidParamValue(
+                        f"参数 {key} 必须为布尔值（收到 {type(value).__name__}）"
+                    )
+
+            # string + max_length（BUG-STR-013）
+            if field.type == ParamFieldType.STRING:
+                if not isinstance(value, str):
+                    raise InvalidParamValue(f"参数 {key} 必须为字符串")
+                if field.max_length is not None and len(value) > field.max_length:
+                    raise InvalidParamValue(
+                        f"参数 {key} 长度 {len(value)} 超过最大长度 {field.max_length}"
+                    )
+
             # select
             if field.type == ParamFieldType.SELECT:
                 valid_values = [opt.get("value") for opt in (field.options or [])]
@@ -263,6 +279,11 @@ class RuntimeConfigService:
         # 合并
         for key, value in override.items():
             if value is not None:
+                # 频率白名单：当前仅支持 daily（BUG-STR-005）
+                if key == "frequency" and value != "daily":
+                    raise InvalidOverrideField(
+                        f"不支持的频率 {value}，当前仅支持 daily"
+                    )
                 config[key] = value
                 # 覆盖 frequency 时同步更新 engine 期望的 timeframe 格式
                 if key == "frequency":
@@ -280,8 +301,9 @@ class RuntimeConfigService:
                 raise RuntimeConfigDateRequired(
                     "backtest 模式必须提供 start_date/end_date"
                 )
-            if start >= end:
-                raise RuntimeConfigDateInvalid("start_date 必须早于 end_date")
+            # BUG-STR-009：允许同日 dry-run（单日回测）
+            if start > end:
+                raise RuntimeConfigDateInvalid("start_date 不能晚于 end_date")
 
 
 # ============================================================

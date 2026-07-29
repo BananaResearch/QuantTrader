@@ -132,6 +132,13 @@ class InvalidParamValue(BacktestError):
     http_status = 400
 
 
+class StrategyCodeDuplicated(BacktestError):
+    """策略编码重复（code 唯一冲突）。"""
+
+    code = "STRATEGY_CODE_DUPLICATED"
+    http_status = 400
+
+
 class DryRunError(BacktestError):
     """试运行失败。"""
 
@@ -157,5 +164,6 @@ __all__ = [
     "RuntimeConfigDateRequired",
     "RuntimeConfigDateInvalid",
     "InvalidParamValue",
+    "StrategyCodeDuplicated",
     "DryRunError",
 ]

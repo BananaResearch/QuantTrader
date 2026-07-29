@@ -322,11 +322,19 @@ class TestResolveConfig:
 
     @pytest.mark.asyncio
     async def test_resolve_config_override_frequency_syncs_timeframe(self, svc):
-        """override frequency 时同步更新 timeframe。"""
+        """override frequency=daily 时同步更新 timeframe（BUG-STR-005：仅支持 daily）。"""
         template = await svc.get_template(1)
-        config = svc.resolve_config(template, {"frequency": "1min"})
-        assert config["frequency"] == "1min"
-        assert config["timeframe"] == "1m"
+        config = svc.resolve_config(template, {"frequency": "daily"})
+        assert config["frequency"] == "daily"
+        assert config["timeframe"] == "1d"
+
+    @pytest.mark.asyncio
+    async def test_resolve_config_override_frequency_rejects_non_daily(self, svc):
+        """BUG-STR-005：override frequency=1min 应被拒绝。"""
+        from strategy_engine.exceptions import InvalidOverrideField
+        template = await svc.get_template(1)
+        with pytest.raises(InvalidOverrideField):
+            svc.resolve_config(template, {"frequency": "1min"})
 
     @pytest.mark.asyncio
     async def test_resolve_config_universe_empty_list(self, svc, test_db):

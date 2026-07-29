@@ -101,18 +101,21 @@ describe('ParamValueForm', () => {
   })
 
   describe('bool 类型', () => {
-    it('true 显示「是」，false 显示「否」', () => {
+    it('true 渲染为已勾选 checkbox，false 渲染为未勾选 checkbox', () => {
+      // BUG-STR-014：使用 checkbox 控件（而非 button），false 值正确回显
       const schema: ParamSchema = { fields: [{ key: 'enabled', type: 'bool', label: '启用' }] }
 
       const { rerender } = render(
         <ParamValueForm schema={schema} value={{ enabled: true }} onChange={noop} />,
       )
-      expect(screen.getByRole('button', { name: '是' })).toBeInTheDocument()
+      const checkboxTrue = screen.getByRole('checkbox', { name: '启用' }) as HTMLInputElement
+      expect(checkboxTrue.checked).toBe(true)
 
       rerender(
         <ParamValueForm schema={schema} value={{ enabled: false }} onChange={noop} />,
       )
-      expect(screen.getByRole('button', { name: '否' })).toBeInTheDocument()
+      const checkboxFalse = screen.getByRole('checkbox', { name: '启用' }) as HTMLInputElement
+      expect(checkboxFalse.checked).toBe(false)
     })
 
     it('点击切换布尔值', async () => {
@@ -120,7 +123,7 @@ describe('ParamValueForm', () => {
       const schema: ParamSchema = { fields: [{ key: 'enabled', type: 'bool', label: '启用' }] }
       render(<ParamValueForm schema={schema} value={{ enabled: false }} onChange={onChange} />)
 
-      await userEvent.click(screen.getByRole('button', { name: '否' }))
+      await userEvent.click(screen.getByRole('checkbox', { name: '启用' }))
       expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ enabled: true }))
     })
   })

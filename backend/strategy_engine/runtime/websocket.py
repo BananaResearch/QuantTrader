@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from fastapi import WebSocket
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 # 连接超时配置
 PING_INTERVAL = 30  # 秒
 PONG_TIMEOUT = 10   # 秒
+
+# 广播节流：同一 strategy_id 在该时间窗口（秒）内最多广播 1 帧
+BROADCAST_THROTTLE_SECONDS = 1.0
 
 
 class WebSocketManager:
@@ -35,6 +39,8 @@ class WebSocketManager:
     def __init__(self):
         # {strategy_id: set[WebSocket]}
         self._connections: dict[int, set[WebSocket]] = {}
+        # {strategy_id: last_broadcast_ts} — BUG-STR-004 节流
+        self._last_broadcast_ts: dict[int, float] = {}
 
     async def add(self, strategy_id: int, websocket: WebSocket) -> None:
         """添加连接。"""
@@ -59,9 +65,23 @@ class WebSocketManager:
     async def broadcast(self, strategy_id: int, message: dict) -> int:
         """向指定策略的所有订阅者广播消息。
 
+        BUG-STR-004：节流——同一 strategy_id 在 BROADCAST_THROTTLE_SECONDS 内
+        最多广播 1 帧。高频保存时后续帧被丢弃并记录 debug 日志。
+
         Returns:
-            成功发送的数量
+            成功发送的数量（节流命中时返回 0）
         """
+        # 节流判断
+        now = time.monotonic()
+        last_ts = self._last_broadcast_ts.get(strategy_id)
+        if last_ts is not None and (now - last_ts) < BROADCAST_THROTTLE_SECONDS:
+            logger.debug(
+                "Broadcast throttled for strategy_id=%d (last %.3fs ago)",
+                strategy_id, now - last_ts,
+            )
+            return 0
+        self._last_broadcast_ts[strategy_id] = now
+
         if strategy_id not in self._connections:
             return 0
 

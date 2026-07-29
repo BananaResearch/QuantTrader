@@ -101,6 +101,41 @@ class TestWebSocketManager:
         assert ws_dead not in manager._connections.get(1, set())
         assert ws_alive in manager._connections.get(1, set())
 
+    @pytest.mark.asyncio
+    async def test_broadcast_throttled_within_window(self):
+        """BUG-STR-004：同一 strategy_id 1 秒内最多广播 1 帧。"""
+        manager = WebSocketManager()
+        ws = AsyncMock()
+        ws.send_text = AsyncMock()
+        await manager.add(1, ws)
+
+        # 第一帧应发送
+        sent1 = await manager.broadcast(1, {"type": "code_updated"})
+        assert sent1 == 1
+
+        # 节流窗口内第二帧应被丢弃
+        sent2 = await manager.broadcast(1, {"type": "code_updated"})
+        assert sent2 == 0
+
+        # send_text 只应被调用一次（第一帧）
+        assert ws.send_text.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_broadcast_does_not_throttle_different_strategies(self):
+        """不同 strategy_id 的广播互不节流。"""
+        manager = WebSocketManager()
+        ws1 = AsyncMock()
+        ws1.send_text = AsyncMock()
+        ws2 = AsyncMock()
+        ws2.send_text = AsyncMock()
+        await manager.add(1, ws1)
+        await manager.add(2, ws2)
+
+        sent1 = await manager.broadcast(1, {"type": "code_updated"})
+        sent2 = await manager.broadcast(2, {"type": "code_updated"})
+        assert sent1 == 1
+        assert sent2 == 1
+
 
 class TestWebSocketConnectionLifecycle:
     """WebSocket 连接生命周期测试"""
