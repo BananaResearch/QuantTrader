@@ -1,31 +1,41 @@
 """strategy_engine 业务编排层。
 
-提供两个入口：
-- run_backtest(stock_code, strategy_id, account_id, timeframe, start_date, end_date)
-    真实回测。P1 阶段 fetchers 仍用 MockKLineFetcher（V 形趋势 60 bar），
-    但引擎、撮合、策略加载都走真实路径；后续接入 api_data 时只需替换 fetcher。
-- dry_run(strategy_id, stock_code, start_date, end_date, max_bars, parameters)
-    试运行，同样基于 mock 数据，让用户快速验证策略代码
-
-dry-run 与真实回测共用 BacktestEngine，区别：
-- run_backtest 接受完整的 6 元组签名（history_replay 期望），不限制 max_bars
-- dry_run 限 max_bars，允许传入临时参数覆盖
+变更说明（strategy-engine-params-redesign）：
+- 新增 StrategyService.validate_param_values()（strategy-param-schema spec）
+- 新增 RuntimeConfigService（runtime-config-template spec）
+- dry_run() 签名变更：template_id + override 替代硬编码 stock_code/date
+- load_strategy() 注入 RuntimeConfig（TODO：待 account_trading 事件总线就绪后完善）
 """
 
 from __future__ import annotations
 
 import os
-from typing import Optional
+import re
+from datetime import date
+from decimal import Decimal
+from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from strategy_engine.exceptions import (
+    DryRunError,
+    InvalidParamValue,
     InvalidStrategyError,
+    InvalidOverrideField,
+    RuntimeConfigDateInvalid,
+    RuntimeConfigDateRequired,
+    RuntimeConfigDefaultForbidden,
+    RuntimeConfigNotFound,
+    RuntimeConfigNameDuplicated,
     StrategyNotActive,
     StrategyNotFound,
 )
-from strategy_engine.models import Strategy
-from strategy_engine.repository import StrategyRepository
+from strategy_engine.models import Strategy, RuntimeConfigTemplate
+from strategy_engine.repository import (
+    RuntimeConfigRepository,
+    StrategyRepository,
+    StrategyVersionRepository,
+)
 from strategy_engine.runtime.engine import BacktestEngine
 from strategy_engine.runtime.mock_data import (
     MockAccountFetcher,
@@ -37,132 +47,319 @@ from strategy_engine.runtime.real_data import (
     RealKLineFetcher,
 )
 from strategy_engine.runtime.types import BacktestResult
-from strategy_engine.schemas import DryRunResponse
+from strategy_engine.schemas import (
+    DataFrequency,
+    DryRunRequest,
+    DryRunResponse,
+    ParamFieldType,
+    ParamSchema,
+    RuntimeConfigTemplateCreate,
+    RuntimeConfigTemplateUpdate,
+)
 
 
 # ============================================================
-# 真实回测入口（P1 阶段使用 mock fetchers，待 api_data 接入后替换）
+# 参数值校验（strategy-param-schema spec）
 # ============================================================
 
-async def run_backtest(
-    db: AsyncSession,
-    stock_code: str,
-    strategy_id: int,
-    account_id: int,
-    timeframe: str,
-    start_date: str,
-    end_date: str,
-) -> BacktestResult:
-    """真实回测入口。
+STOCK_CODE_PATTERN = re.compile(r"^\d{6}\.(SZ|SH|BJ)$")
 
-    签名与 history_replay/strategy_mock.py:run_backtest_mock 对齐，
-    便于跨模块替换。
 
-    P1 阶段 fetchers 仍用 mock（不依赖 api_data 真实数据），
-    但策略加载 / 引擎 / 撮合 / 历史 buffer 全走真实路径。
+class StrategyService:
+    """策略相关业务逻辑。"""
 
-    Args:
-        db: 异步 DB 会话（用于查 strategy）
-        stock_code: 股票代码（P1 mock 数据忽略此字段）
-        strategy_id: 策略 ID
-        account_id: 账户 ID（P1 mock 数据忽略此字段）
-        timeframe: K 线周期（P1 仅支持 "1d"）
-        start_date: 起始日期（P1 mock 数据忽略）
-        end_date: 结束日期（P1 mock 数据忽略）
+    @staticmethod
+    def validate_param_values(
+        schema: ParamSchema,
+        values: dict[str, Any],
+    ) -> None:
+        """基于 Schema 校验参数值，失败抛 InvalidParamValue。
 
-    Returns:
-        BacktestResult：完整的回测结果
+        规则：
+        - 必填字段（required=True）不允许缺失
+        - int 字段值必须为整数
+        - float 字段值必须为数值
+        - min/max 范围校验
+        - select 字段值必须在 options.value 列表中
+        - list 字段值必须为数组，元素类型匹配 item_type
+        - stock_code 字段值必须匹配 ^\\d{6}\\.(SZ|SH|BJ)$
+        - 允许 values 含 Schema 未声明的额外字段（向前兼容）
+        """
+        field_map: dict[str, Any] = {f.key: f for f in schema.fields}
 
-    Raises:
-        StrategyNotFound: strategy_id 不存在
-        StrategyNotActive: status != 'active'
-        InvalidStrategyError: code_content 为空
-        BacktestError: 其他引擎错误（如 timeframe 不支持）
-    """
-    # 1. 查 strategy
-    repo = StrategyRepository(db)
-    strategy: Optional[Strategy] = await repo.get_by_id(strategy_id)
-    if not strategy:
-        raise StrategyNotFound(f"策略 {strategy_id} 不存在")
-    if strategy.status != "active":
-        raise StrategyNotActive(
-            f"策略 {strategy_id} 状态非 active，当前 status={strategy.status}"
-        )
-    if not strategy.code_content:
-        raise InvalidStrategyError("策略代码为空，无法回测")
+        # 1. 必填检查
+        for field in schema.fields:
+            if field.required and field.key not in values:
+                raise InvalidParamValue(f"参数 {field.key} 必填")
 
-    # 2. 构造 fetchers（根据环境变量选择 mock 或 real）
-    use_real_data = os.environ.get("USE_REAL_DATA", "false").lower() in ("true", "1", "yes")
+        # 2. 类型与范围检查
+        for key, value in values.items():
+            field = field_map.get(key)
+            if not field:
+                # 允许额外字段（向前兼容）
+                continue
 
-    if use_real_data:
-        # P2: 使用真实 api_data 和 account_trading fetchers
-        kline_fetcher = RealKLineFetcher(db)
-        account_fetcher = RealAccountFetcher(db)
-    else:
-        # P1: 使用 mock fetchers（不依赖外部服务）
-        kline_fetcher = MockKLineFetcher(max_bars=250)  # 给足 250 bar 覆盖常规年度回测
-        account_fetcher = MockAccountFetcher()
+            # int
+            if field.type == ParamFieldType.INT:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    raise InvalidParamValue(f"参数 {key} 必须为整数")
 
-    engine = BacktestEngine(
-        kline_fetcher=kline_fetcher,
-        benchmark_fetcher=MockBenchmarkFetcher(),  # TODO: 后续可替换为 RealBenchmarkFetcher
-        account_fetcher=account_fetcher,
-    )
+            # float
+            if field.type == ParamFieldType.FLOAT:
+                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                    raise InvalidParamValue(f"参数 {key} 必须为数值")
 
-    # 3. 跑回测
-    return await engine.run(
-        strategy=strategy,
-        stock_code=stock_code,
-        account_id=account_id,
-        timeframe=timeframe,
-        start_date=start_date,
-        end_date=end_date,
-        session_id=f"backtest_{strategy_id}_{stock_code}",
-    )
+            # 数值范围
+            if field.type in (ParamFieldType.INT, ParamFieldType.FLOAT):
+                if field.min is not None and float(value) < field.min:
+                    raise InvalidParamValue(f"参数 {key} 小于最小值 {field.min}")
+                if field.max is not None and float(value) > field.max:
+                    raise InvalidParamValue(f"参数 {key} 大于最大值 {field.max}")
+
+            # bool（严格类型校验，BUG-STR-014）
+            if field.type == ParamFieldType.BOOL:
+                if type(value) is not bool:
+                    raise InvalidParamValue(
+                        f"参数 {key} 必须为布尔值（收到 {type(value).__name__}）"
+                    )
+
+            # string + max_length（BUG-STR-013）
+            if field.type == ParamFieldType.STRING:
+                if not isinstance(value, str):
+                    raise InvalidParamValue(f"参数 {key} 必须为字符串")
+                if field.max_length is not None and len(value) > field.max_length:
+                    raise InvalidParamValue(
+                        f"参数 {key} 长度 {len(value)} 超过最大长度 {field.max_length}"
+                    )
+
+            # select
+            if field.type == ParamFieldType.SELECT:
+                valid_values = [opt.get("value") for opt in (field.options or [])]
+                if value not in valid_values:
+                    raise InvalidParamValue(f"参数 {key} 不在允许选项中")
+
+            # stock_code
+            if field.type == ParamFieldType.STOCK_CODE:
+                if not isinstance(value, str) or not STOCK_CODE_PATTERN.match(value):
+                    raise InvalidParamValue(
+                        f"参数 {key} 必须匹配 ^\\d{{6}}\\.(SZ|SH|BJ)$"
+                    )
+
+            # list
+            if field.type == ParamFieldType.LIST:
+                if not isinstance(value, list):
+                    raise InvalidParamValue(f"参数 {key} 必须为数组")
+                item_type = field.item_type
+                for i, item in enumerate(value):
+                    if item_type == ParamFieldType.STOCK_CODE:
+                        if not isinstance(item, str) or not STOCK_CODE_PATTERN.match(item):
+                            raise InvalidParamValue(
+                                f"参数 {key} 第 {i+1} 项格式错误"
+                            )
+                    elif item_type == ParamFieldType.INT:
+                        if not isinstance(item, int) or isinstance(item, bool):
+                            raise InvalidParamValue(
+                                f"参数 {key} 第 {i+1} 项必须为整数"
+                            )
+                    elif item_type == ParamFieldType.FLOAT:
+                        if not isinstance(item, (int, float)) or isinstance(item, bool):
+                            raise InvalidParamValue(
+                                f"参数 {key} 第 {i+1} 项必须为数值"
+                            )
 
 
 # ============================================================
-# dry-run 入口
+# RuntimeConfigService（runtime-config-template spec）
+# ============================================================
+
+# 允许覆盖的字段白名单
+OVERRIDE_ALLOWED_FIELDS = frozenset({
+    "universe",
+    "start_date",
+    "end_date",
+    "initial_capital",
+    "frequency",
+    "slippage",
+    "commission",
+})
+
+
+class RuntimeConfigService:
+    """运行配置模板业务逻辑。"""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+        self.repo = RuntimeConfigRepository(session)
+
+    async def list_templates(
+        self,
+        mode: str | None = None,
+    ) -> list[RuntimeConfigTemplate]:
+        return await self.repo.list_all(mode=mode)
+
+    async def get_template(self, template_id: int) -> RuntimeConfigTemplate:
+        template = await self.repo.get_by_id(template_id)
+        if not template:
+            raise RuntimeConfigNotFound(f"运行配置模板 {template_id} 不存在")
+        return template
+
+    async def create_template(
+        self,
+        data: RuntimeConfigTemplateCreate,
+    ) -> RuntimeConfigTemplate:
+        # 名称唯一性
+        existing = await self.repo.get_by_name(data.name)
+        if existing:
+            raise RuntimeConfigNameDuplicated(f"模板名称 {data.name} 已存在")
+
+        return await self.repo.create(data.model_dump())
+
+    async def update_template(
+        self,
+        template_id: int,
+        data: RuntimeConfigTemplateUpdate,
+    ) -> RuntimeConfigTemplate:
+        # 系统预设禁止修改
+        template = await self.get_template(template_id)
+        if template.is_default:
+            raise RuntimeConfigDefaultForbidden("系统预设模板不可修改")
+
+        # 名称唯一性（排除自己）
+        update_data = data.model_dump(exclude_unset=True)
+        if "name" in update_data:
+            existing = await self.repo.get_by_name(update_data["name"])
+            if existing and existing.id != template_id:
+                raise RuntimeConfigNameDuplicated(
+                    f"模板名称 {update_data['name']} 已存在"
+                )
+
+        return await self.repo.update(template_id, update_data)
+
+    async def delete_template(self, template_id: int) -> None:
+        """删除模板，系统预设禁止。"""
+        template = await self.get_template(template_id)
+        if template.is_default:
+            raise RuntimeConfigDefaultForbidden("系统预设模板不可删除")
+        await self.repo.delete(template_id)
+
+    def resolve_config(
+        self,
+        template: RuntimeConfigTemplate,
+        override: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """合并模板与临时覆盖，返回运行时配置 dict。
+
+        规则：
+        - override 仅允许 OVERRIDE_ALLOWED_FIELDS 中的字段
+        - 合并后重新校验 backtest 日期约束
+        """
+        # 构建基础配置
+        config: dict[str, Any] = {
+            "mode": template.mode,
+            "universe": list(template.universe) if template.universe else [],
+            "start_date": str(template.start_date) if template.start_date else None,
+            "end_date": str(template.end_date) if template.end_date else None,
+            "initial_capital": float(template.initial_capital),
+            "frequency": template.frequency,
+            "timeframe": _freq_to_timeframe(template.frequency),  # 引擎使用 '1d' 格式
+            "slippage": float(template.slippage),
+            "commission": float(template.commission),
+        }
+
+        if not override:
+            # 合并后仍需校验
+            self._validate_backtest_dates(config)
+            return config
+
+        # 字段白名单检查
+        for key in override:
+            if key not in OVERRIDE_ALLOWED_FIELDS:
+                raise InvalidOverrideField(f"覆盖字段 {key} 不允许")
+
+        # 合并
+        for key, value in override.items():
+            if value is not None:
+                # 频率白名单：当前仅支持 daily（BUG-STR-005）
+                if key == "frequency" and value != "daily":
+                    raise InvalidOverrideField(
+                        f"不支持的频率 {value}，当前仅支持 daily"
+                    )
+                config[key] = value
+                # 覆盖 frequency 时同步更新 engine 期望的 timeframe 格式
+                if key == "frequency":
+                    config["timeframe"] = _freq_to_timeframe(value)
+
+        # 合并后校验
+        self._validate_backtest_dates(config)
+        return config
+
+    def _validate_backtest_dates(self, config: dict[str, Any]) -> None:
+        if config.get("mode") == "backtest":
+            start = config.get("start_date")
+            end = config.get("end_date")
+            if not start or not end:
+                raise RuntimeConfigDateRequired(
+                    "backtest 模式必须提供 start_date/end_date"
+                )
+            # BUG-STR-009：允许同日 dry-run（单日回测）
+            if start > end:
+                raise RuntimeConfigDateInvalid("start_date 不能晚于 end_date")
+
+
+# ============================================================
+# 辅助函数
+# ============================================================
+
+def _freq_to_timeframe(freq: str) -> str:
+    """将 frequency 字符串映射为 engine 期望的 timeframe 格式。引擎目前仅支持 '1d'。"""
+    mapping = {
+        "daily": "1d",
+        "1min": "1m",
+        "5min": "5m",
+        "15min": "15m",
+        "30min": "30m",
+        "60min": "60m",
+    }
+    return mapping.get(freq, "1d")
+
+
+# ============================================================
+# dry-run 入口（签名变更）
 # ============================================================
 
 async def dry_run(
     db: AsyncSession,
     strategy_id: int,
-    stock_code: str,
-    start_date: str,
-    end_date: str,
-    max_bars: int = 30,
-    parameters: Optional[dict] = None,
+    payload: DryRunRequest,
 ) -> DryRunResponse:
-    """基于 mock 数据的试运行。
+    """基于 mock 数据的试运行（signature 变更后）。
 
     业务流程：
       1. 查 DB 拿策略（不存在 → 404；status != active → 400）
-      2. 用 mock fetchers 构造 BacktestEngine
-      3. 调 engine.run，限定 max_bars 个 bar
-      4. 把 BacktestResult 转为 DryRunResponse（简化字段）
+      2. 加载 RuntimeConfigTemplate 并合并 override
+      3. 可选校验 param_schema 与 parameters
+      4. 用 mock fetchers 构造 BacktestEngine
+      5. 调 engine.run，限定 max_bars
+      6. 可选保存 runtime_config_snapshot 到最新版本
 
     Args:
         db: 异步 DB 会话
         strategy_id: 策略 ID
-        stock_code: 股票代码（P1 用于 universe 标识，不实际拉数据）
-        start_date: 起始日期（仅展示，mock 数据忽略）
-        end_date: 结束日期（仅展示，mock 数据忽略）
-        max_bars: 取多少根 bar 跑（1~100）
-        parameters: 覆盖策略默认参数；None 用策略自带
+        payload: DryRunRequest（template_id + override + max_bars + parameters + save_snapshot）
 
     Returns:
-        DryRunResponse：含 session_id / total_bars / final_capital /
-        total_return_pct / bars 简化列表
+        DryRunResponse
 
     Raises:
-        StrategyNotFound: strategy_id 不存在
-        StrategyNotActive: status != 'active'
-        InvalidStrategyError: code_content 为空
+        StrategyNotFound
+        StrategyNotActive
+        RuntimeConfigNotFound
+        InvalidParamValue
+        DryRunError
     """
-    # 1. 查 DB
-    repo = StrategyRepository(db)
-    strategy: Optional[Strategy] = await repo.get_by_id(strategy_id)
+    # 1. 查策略
+    strategy_repo = StrategyRepository(db)
+    strategy: Optional[Strategy] = await strategy_repo.get_by_id(strategy_id)
     if not strategy:
         raise StrategyNotFound(f"策略 {strategy_id} 不存在")
     if strategy.status != "active":
@@ -172,53 +369,72 @@ async def dry_run(
     if not strategy.code_content:
         raise InvalidStrategyError("策略代码为空，无法试运行")
 
-    # 2. 用 mock fetchers 构造引擎
+    # 2. 加载并合并运行配置
+    config_svc = RuntimeConfigService(db)
+    template = await config_svc.get_template(payload.template_id)
+    runtime_config = config_svc.resolve_config(template, payload.override)
+
+    # 3. 校验参数（如果策略有 Schema）
+    strategy_params = strategy.parameters or {}
+    if payload.parameters:
+        strategy_params = dict(strategy_params)
+        strategy_params.update(payload.parameters)
+
+    if strategy.param_schema:
+        schema = ParamSchema.model_validate(strategy.param_schema)
+        StrategyService.validate_param_values(schema, strategy_params)
+
+    # 4. 用 mock fetchers 构造引擎
     engine = BacktestEngine(
-        kline_fetcher=MockKLineFetcher(max_bars=max_bars),
+        kline_fetcher=MockKLineFetcher(max_bars=payload.max_bars),
         benchmark_fetcher=MockBenchmarkFetcher(),
         account_fetcher=MockAccountFetcher(),
     )
 
-    # 3. 跑回测（参数覆盖）
-    if parameters:
-        # 合并参数：策略默认参数 + 用户覆盖
-        merged = dict(strategy.parameters or {})
-        merged.update(parameters)
-        # 构造临时 strategy-like 对象（避免修改 ORM 实例）
-        class _Tmp:
-            pass
-        tmp = _Tmp()
-        tmp.id = strategy.id
-        tmp.name = strategy.name
-        tmp.status = strategy.status
-        tmp.code_content = strategy.code_content
-        tmp.parameters = merged
-        result_strategy = tmp
-    else:
-        result_strategy = strategy
+    # 5. 构造临时 strategy-like 对象（避免修改 ORM 实例）
+    class _Tmp:
+        pass
+    tmp = _Tmp()
+    tmp.id = strategy.id
+    tmp.name = strategy.name
+    tmp.status = strategy.status
+    tmp.code_content = strategy.code_content
+    tmp.parameters = strategy_params
 
-    # BacktestEngine.run 内部会校验 strategy 状态与 code_content，
-    # 但我们已经在上层校验过；传入 strategy_obj 即可
-    result: BacktestResult = await engine.run(
-        strategy=result_strategy,
-        stock_code=stock_code,
-        account_id=0,  # mock 账户
-        timeframe="1d",
-        start_date=start_date,
-        end_date=end_date,
-        session_id=f"dryrun_{strategy_id}_{stock_code}",
-    )
+    # 6. 执行（universe 取 runtime_config）
+    stock_codes = runtime_config.get("universe", [])
+    primary_stock = stock_codes[0] if stock_codes else "000001.SZ"
 
-    # 4. 转为 DryRunResponse
+    try:
+        result: BacktestResult = await engine.run(
+            strategy=tmp,
+            stock_code=primary_stock,
+            account_id=0,  # mock 账户
+            timeframe=runtime_config.get("timeframe", "1d"),
+            start_date=str(runtime_config.get("start_date") or ""),
+            end_date=str(runtime_config.get("end_date") or ""),
+            session_id=f"dryrun_{strategy_id}_{primary_stock}",
+        )
+    except Exception as e:
+        raise DryRunError(f"试运行失败：{e}") from e
+
+    # 7. 可选保存运行配置快照
+    if payload.save_snapshot:
+        version_repo = StrategyVersionRepository(db)
+        latest_version = await version_repo.get_latest(strategy_id)
+        if latest_version:
+            snapshot = {
+                "template_id": payload.template_id,
+                "override": payload.override,
+                "runtime_config": runtime_config,
+            }
+            await version_repo.update_snapshot(latest_version.id, snapshot)
+
     return _to_dry_run_response(result)
 
 
-# ============================================================
-# 内部：BacktestResult → DryRunResponse
-# ============================================================
-
 def _to_dry_run_response(result: BacktestResult) -> DryRunResponse:
-    """把完整 BacktestResult 转为简化的 DryRunResponse。"""
+    """BacktestResult → DryRunResponse"""
     from strategy_engine.schemas import DryRunBarSummary
 
     initial = result.bars[0].total_assets if result.bars else 0.0
@@ -250,68 +466,101 @@ def _to_dry_run_response(result: BacktestResult) -> DryRunResponse:
 
 
 # ============================================================
-# 实盘对接：load_strategy 接口
+# 真实回测入口（保持不变，与 P3 change 无冲突）
+# ============================================================
+
+async def run_backtest(
+    db: AsyncSession,
+    stock_code: str,
+    strategy_id: int,
+    account_id: int,
+    timeframe: str,
+    start_date: str,
+    end_date: str,
+) -> BacktestResult:
+    """真实回测入口（与 history_replay 期望对齐）。"""
+    repo = StrategyRepository(db)
+    strategy: Optional[Strategy] = await repo.get_by_id(strategy_id)
+    if not strategy:
+        raise StrategyNotFound(f"策略 {strategy_id} 不存在")
+    if strategy.status != "active":
+        raise StrategyNotActive(
+            f"策略 {strategy_id} 状态非 active，当前 status={strategy.status}"
+        )
+    if not strategy.code_content:
+        raise InvalidStrategyError("策略代码为空，无法回测")
+
+    use_real_data = os.environ.get("USE_REAL_DATA", "false").lower() in ("true", "1", "yes")
+
+    if use_real_data:
+        kline_fetcher = RealKLineFetcher(db)
+        account_fetcher = RealAccountFetcher(db)
+    else:
+        kline_fetcher = MockKLineFetcher(max_bars=250)
+        account_fetcher = MockAccountFetcher()
+
+    engine = BacktestEngine(
+        kline_fetcher=kline_fetcher,
+        benchmark_fetcher=MockBenchmarkFetcher(),
+        account_fetcher=account_fetcher,
+    )
+
+    return await engine.run(
+        strategy=strategy,
+        stock_code=stock_code,
+        account_id=account_id,
+        timeframe=timeframe,
+        start_date=start_date,
+        end_date=end_date,
+        session_id=f"backtest_{strategy_id}_{stock_code}",
+    )
+
+
+# ============================================================
+# 实盘对接：load_strategy（保持不变，RuntimeConfig 注入 TODO）
 # ============================================================
 
 async def load_strategy(
     db: AsyncSession,
     strategy_id: int,
 ) -> "StrategyInstance":
-    """加载策略实例（优先从缓存获取，否则从 DB 加载并缓存）。
+    """加载策略实例。
 
-    供 strategy_execution 模块调用，用于实盘交易。
-
-    Args:
-        db: 数据库会话
-        strategy_id: 策略 ID
-
-    Returns:
-        StrategyInstance: 加载好的策略实例
-
-    Raises:
-        StrategyNotFound: 策略不存在
-        StrategyNotActive: 策略未启用
-        InvalidStrategyError: 策略代码无效
+    TODO（strategy-engine-params-redesign change）：
+    - 当前仅拉取策略代码和参数
+    - RuntimeConfig 注入（从策略的 account_id 拉取账户快照）待 account_trading 事件总线就绪后完善
     """
     from strategy_engine.runtime.registry import get_global_registry
     from strategy_engine.runtime.loader import StrategyLoader, StrategyInstance
 
     registry = get_global_registry()
 
-    # 定义 loader_func：从 DB 加载策略并编译
     async def loader_func(sid: int) -> StrategyInstance:
         repo = StrategyRepository(db)
         strategy = await repo.get_by_id(sid)
 
         if not strategy:
             raise StrategyNotFound(f"策略 {sid} 不存在")
-
         if strategy.status != "active":
             raise StrategyNotActive(f"策略 {sid} 未启用（status={strategy.status}）")
-
         if not strategy.code_content:
             raise InvalidStrategyError(f"策略 {sid} 代码为空")
 
-        # 使用 StrategyLoader 编译策略代码
         loader = StrategyLoader()
         instance = loader.load(
             code_content=strategy.code_content,
             parameters=strategy.parameters or {},
         )
-
         return instance
 
-    # 从缓存获取（未命中则调用 loader_func）
     instance = await registry.get(strategy_id, loader_func)
-
     if instance is None:
         raise StrategyNotFound(f"策略 {strategy_id} 加载失败")
-
     return instance
 
 
 # ============================================================
-# P3: 并发回测
+# P3: 并发回测（保持不变）
 # ============================================================
 
 async def batch_backtest(
@@ -322,22 +571,7 @@ async def batch_backtest(
     end_date: str,
     timeframe: str = "1d",
 ) -> list[BacktestResult]:
-    """并发执行多个策略回测。
-
-    Args:
-        db: 数据库会话
-        strategy_ids: 策略 ID 列表（最多 10 个）
-        stock_code: 股票代码
-        start_date: 起始日期
-        end_date: 结束日期
-        timeframe: 时间框架
-
-    Returns:
-        list[BacktestResult]: 各策略的回测结果
-
-    Raises:
-        InvalidStrategyError: strategy_ids 长度 > 10
-    """
+    """并发执行多个策略回测。"""
     if len(strategy_ids) > 10:
         raise InvalidStrategyError("并发回测最多支持 10 个策略")
 
@@ -357,13 +591,11 @@ async def batch_backtest(
     tasks = [_run_one(sid) for sid in strategy_ids]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # 将异常转换为结果中的错误标记
     output: list[BacktestResult] = []
     for i, r in enumerate(results):
         if isinstance(r, Exception):
-            logger.error(f"Backtest failed for strategy {strategy_ids[i]}: {r}")
-            # 返回一个空结果标记错误
             from strategy_engine.runtime.types import BacktestResult as BR
+
             output.append(BR(
                 session_id=f"error_{strategy_ids[i]}",
                 stock_code=stock_code,
@@ -383,4 +615,11 @@ async def batch_backtest(
     return output
 
 
-__all__ = ["batch_backtest", "dry_run", "load_strategy", "run_backtest"]
+__all__ = [
+    "batch_backtest",
+    "dry_run",
+    "load_strategy",
+    "run_backtest",
+    "StrategyService",
+    "RuntimeConfigService",
+]

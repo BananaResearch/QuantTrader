@@ -13,8 +13,8 @@
 import math
 from typing import Optional
 
-# 类型契约统一到 strategy_engine.runtime.types（单源），避免两边重复定义
-from strategy_engine.runtime.types import BacktestResult, BarRecord, OrderRecord, PositionRecord
+# 类型契约：必须从 strategy_engine.api facade import（跨模块契约单源）
+from strategy_engine.api import BacktestResult, BarRecord, OrderRecord, PositionRecord
 
 
 # ============================================================

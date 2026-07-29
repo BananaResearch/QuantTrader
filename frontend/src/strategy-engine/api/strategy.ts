@@ -3,28 +3,35 @@
  *
  * 与后端 `backend/strategy_engine/router.py` 路由严格对齐。
  *
- * 注意：request 实例的响应拦截器已解包到 `ApiResponse.data`，
- * 因此 `request.get<T>(...)` 直接返回 `Promise<T>`（业务数据本身）。
- * 后端 list 接口的 `total` 顶层字段在拦截器后被丢弃，前端用 `length` 替代。
+ * 变更说明（strategy-engine-params-redesign）：
+ * - 删除 strategy_type 过滤参数
+ * - dry-run 签名变更（DryRunRequestInput）
+ * - 新增 RuntimeConfigTemplate CRUD
+ * - 新增策略模板列表
  */
 
 import request from '@/common/utils/request'
 import type {
   DryRunRequestInput,
   DryRunResult,
+  RuntimeConfigTemplate,
+  RuntimeConfigTemplateCreate,
   Strategy,
   StrategyCreateInput,
   StrategyOption,
+  StrategyTemplateItem,
   StrategyUpdateInput,
   StrategyValidateRequest,
   StrategyValidateResult,
   StrategyVersion,
 } from '../types/strategy'
 
-/** 状态过滤参数 */
+// ============================================================
+// 列表过滤参数（删除 strategy_type）
+// ============================================================
+
 export interface StrategyListParams {
   status?: string
-  strategy_type?: string
   limit?: number
   offset?: number
 }
@@ -54,24 +61,6 @@ export function deleteStrategy(id: number) {
 }
 
 // ============================================================
-// 简化列表 / 校验 / 试运行
-// ============================================================
-
-export function getStrategyOptions(status: 'active' | 'all' = 'active') {
-  return request.get<StrategyOption[]>('/strategy/options/all', {
-    params: { status },
-  })
-}
-
-export function validateStrategyCode(payload: StrategyValidateRequest) {
-  return request.post<StrategyValidateResult>('/strategy/validate', payload)
-}
-
-export function dryRunStrategy(id: number, payload: DryRunRequestInput) {
-  return request.post<DryRunResult>(`/strategy/${id}/dry-run`, payload)
-}
-
-// ============================================================
 // 策略版本
 // ============================================================
 
@@ -86,4 +75,63 @@ export function createStrategyVersion(
   data: Omit<StrategyVersion, 'id' | 'created_at' | 'strategy_id'> & { strategy_id?: number },
 ) {
   return request.post<StrategyVersion>(`/strategy/${strategyId}/versions`, data)
+}
+
+// ============================================================
+// 简化列表 / 校验 / 试运行
+// ============================================================
+
+export function getStrategyOptions(status: 'active' | 'all' = 'active') {
+  return request.get<StrategyOption[]>('/strategy/options/all', {
+    params: { status },
+  })
+}
+
+export function validateStrategyCode(payload: StrategyValidateRequest) {
+  return request.post<StrategyValidateResult>('/strategy/validate', payload)
+}
+
+/**
+ * 策略试运行（签名变更）
+ * - 使用 template_id + override 替代硬编码 stock_code/start_date/end_date
+ */
+export function dryRunStrategy(id: number, payload: DryRunRequestInput) {
+  return request.post<DryRunResult>(`/strategy/${id}/dry-run`, payload)
+}
+
+// ============================================================
+// RuntimeConfigTemplate CRUD
+// ============================================================
+
+export function listRuntimeConfigs(mode?: string) {
+  return request.get<RuntimeConfigTemplate[]>('/strategy/runtime-configs', {
+    params: mode ? { mode } : undefined,
+  })
+}
+
+export function createRuntimeConfig(data: RuntimeConfigTemplateCreate) {
+  return request.post<RuntimeConfigTemplate>('/strategy/runtime-configs', data)
+}
+
+export function getRuntimeConfig(id: number) {
+  return request.get<RuntimeConfigTemplate>(`/strategy/runtime-configs/${id}`)
+}
+
+export function updateRuntimeConfig(
+  id: number,
+  data: Partial<RuntimeConfigTemplateCreate>,
+) {
+  return request.put<RuntimeConfigTemplate>(`/strategy/runtime-configs/${id}`, data)
+}
+
+export function deleteRuntimeConfig(id: number) {
+  return request.delete(`/strategy/runtime-configs/${id}`)
+}
+
+// ============================================================
+// 策略模板列表（新建策略选择器用）
+// ============================================================
+
+export function listStrategyTemplates() {
+  return request.get<StrategyTemplateItem[]>('/strategy/templates')
 }

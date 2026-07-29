@@ -29,7 +29,7 @@ interface UseStrategiesResult {
 }
 
 export function useStrategies(options: UseStrategiesOptions = {}): UseStrategiesResult {
-  const { autoFetch = true, limit = 100, offset = 0, strategy_type } = options
+  const { autoFetch = true, limit = 100, offset = 0 } = options
 
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [total, setTotal] = useState(0)
@@ -47,11 +47,7 @@ export function useStrategies(options: UseStrategiesOptions = {}): UseStrategies
     setLoading(true)
     setError(null)
     try {
-      const params: StrategyListParams = {
-        limit,
-        offset,
-        strategy_type,
-      }
+      const params: StrategyListParams = { limit, offset }
       if (statusFilter !== 'all') {
         params.status = statusFilter
       }
@@ -71,7 +67,7 @@ export function useStrategies(options: UseStrategiesOptions = {}): UseStrategies
         setLoading(false)
       }
     }
-  }, [limit, offset, strategy_type, statusFilter])
+  }, [limit, offset, statusFilter])
 
   useEffect(() => {
     if (autoFetch) {

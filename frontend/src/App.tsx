@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { createBrowserRouter, RouterProvider, Outlet } from 'react-router-dom'
 import { Suspense } from 'react'
 import {
   HomePage,
@@ -25,28 +25,37 @@ function Loading() {
   )
 }
 
-export default function App() {
-  return (
-    <BrowserRouter>
+// 使用 DataRouter（createBrowserRouter + RouterProvider）。
+// 必需：strategy-engine 的 useUnsavedChanges hook 调用 useBlocker，
+// 而 useBlocker 要求上下文必须是 DataRouter（BrowserRouter + <Routes> 不支持）。
+// 所有懒加载页面通过共享 Suspense layout route 获得统一的 fallback。
+const router = createBrowserRouter([
+  {
+    element: (
       <Suspense fallback={<Loading />}>
-        <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/api-data" element={<ApiDataPage />} />
-          <Route path="/api-data-debug" element={<ApiDataDebugPage />} />
-          <Route path="/simple-debug" element={<SimpleDebugPage />} />
-          <Route path="/test-page" element={<TestPage />} />
-          <Route path="/symbol-detail" element={<SymbolDetailPage />} />
-          <Route path="/account" element={<AccountManagementPage />} />
-          <Route path="/account/manage" element={<AccountManagementPage />} />
-          <Route path="/account/trading" element={<TradingDeskPage />} />
-          <Route path="/account/orders" element={<OrderQueryPage />} />
-          <Route path="/strategies" element={<StrategiesPage />} />
-          <Route path="/strategy-editor" element={<StrategyEditorPage />} />
-          <Route path="/execution" element={<ExecutionPage />} />
-          <Route path="/review" element={<ReviewPage />} />
-          <Route path="/replay" element={<ReplayPage />} />
-        </Routes>
+        <Outlet />
       </Suspense>
-    </BrowserRouter>
-  )
+    ),
+    children: [
+      { path: '/', element: <HomePage /> },
+      { path: '/api-data', element: <ApiDataPage /> },
+      { path: '/api-data-debug', element: <ApiDataDebugPage /> },
+      { path: '/simple-debug', element: <SimpleDebugPage /> },
+      { path: '/test-page', element: <TestPage /> },
+      { path: '/symbol-detail', element: <SymbolDetailPage /> },
+      { path: '/account', element: <AccountManagementPage /> },
+      { path: '/account/manage', element: <AccountManagementPage /> },
+      { path: '/account/trading', element: <TradingDeskPage /> },
+      { path: '/account/orders', element: <OrderQueryPage /> },
+      { path: '/strategies', element: <StrategiesPage /> },
+      { path: '/strategy-editor', element: <StrategyEditorPage /> },
+      { path: '/execution', element: <ExecutionPage /> },
+      { path: '/review', element: <ReviewPage /> },
+      { path: '/replay', element: <ReplayPage /> },
+    ],
+  },
+])
+
+export default function App() {
+  return <RouterProvider router={router} />
 }

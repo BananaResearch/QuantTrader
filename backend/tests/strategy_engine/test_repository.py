@@ -32,7 +32,6 @@ async def sample_strategy(strategy_repo):
     strategy_data = {
         "code": unique_code,
         "name": "测试策略",
-        "strategy_type": "trend",
         "description": "用于仓储层测试",
         "status": "active",
         "version": "1.0.0",
@@ -59,7 +58,6 @@ class TestStrategyRepository:
         strategy_data = {
             "code": unique_code,
             "name": "测试创建",
-            "strategy_type": "trend",
             "description": "测试创建策略",
             "status": "draft",
             "version": "1.0.0",
@@ -75,7 +73,7 @@ class TestStrategyRepository:
         assert strategy.id is not None
         assert strategy.code == unique_code
         assert strategy.name == "测试创建"
-        assert strategy.strategy_type == "trend"
+        # strategy_type 字段已删除（strategy-engine-params-redesign）
         assert strategy.status == "draft"
         assert strategy.parameters == {"test": True}
         assert strategy.tags == ["create", "test"]
@@ -136,16 +134,6 @@ class TestStrategyRepository:
             assert strategy.status == "active"
 
     @pytest.mark.asyncio
-    async def test_list_all_with_type_filter(self, strategy_repo, sample_strategy):
-        """list_all(strategy_type='trend') 过滤 trend 策略。"""
-        strategies = await strategy_repo.list_all(strategy_type="trend")
-
-        assert isinstance(strategies, list)
-        # 所有返回的策略都应该是 trend
-        for strategy in strategies:
-            assert strategy.strategy_type == "trend"
-
-    @pytest.mark.asyncio
     async def test_list_all_with_pagination(self, strategy_repo, sample_strategy):
         """list_all(limit=1, offset=0) 分页。"""
         strategies = await strategy_repo.list_all(limit=1, offset=0)
@@ -198,7 +186,6 @@ class TestStrategyRepository:
         strategy_data = {
             "code": unique_code,
             "name": "测试删除",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
         }
@@ -245,7 +232,7 @@ class TestStrategyRepository:
             assert hasattr(option, "id")
             assert hasattr(option, "name")
             assert hasattr(option, "description")
-            assert hasattr(option, "strategy_type")
+            assert not hasattr(type(option), "strategy_type")  # strategy_type 已删除
             assert option.status == "active"  # 默认只返回 active
 
     @pytest.mark.asyncio

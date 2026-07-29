@@ -3,14 +3,15 @@
 
 本文件承担两个职责：
 1. **类型契约 re-export**：BacktestResult / BarRecord / OrderRecord / PositionRecord
-   单源在 strategy_engine.runtime.types，本文件 re-export 便于向后兼容。
+   单源在 strategy_engine.api facade，本文件 re-export 仅为向后兼容。
 2. **run_backtest_mock**：保留原有纯 Python 模拟实现，作为：
    - 开发时不需要 DB / 不需要 strategy_engine 模块时的独立测试兜底
    - 联调阶段设置 USE_MOCK_STRATEGY=true 环境变量可强制走本实现
 
-调用方式：
-    from strategy_engine.service import run_backtest
-    result = await run_backtest(db, stock_code, strategy_id, account_id, timeframe, start_date, end_date)
+调用方式（推荐）：
+    from strategy_engine.api import simulate
+    result = await simulate(db, strategy_id=1, stock_code="000001.SZ",
+                            start_date="2024-01-01", end_date="2024-12-31")
 
     # 仅在需要独立 mock 时使用：
     from history_replay.strategy_mock import run_backtest_mock
@@ -25,8 +26,9 @@ import random
 from datetime import date, timedelta
 from typing import Optional
 
-# === 类型契约 re-export（向后兼容，单源在 strategy_engine.runtime.types） ===
-from strategy_engine.runtime.types import (  # noqa: F401
+# === 类型契约 re-export（消费方应直接 from strategy_engine.api import ...） ===
+# 保留此处 re-export 仅为向后兼容；新代码请直接从 strategy_engine.api 导入。
+from strategy_engine.api import (  # noqa: F401
     BacktestResult,
     BarRecord,
     OrderRecord,
@@ -189,13 +191,14 @@ async def run_backtest_mock(
     # 1. 检查 USE_MOCK_STRATEGY 环境变量
     use_mock = os.environ.get("USE_MOCK_STRATEGY", "").lower() in ("1", "true", "yes")
 
-    # 2. 默认走真实引擎（需要 db）
+    # 2. 默认走真实引擎（需要 db）——通过 strategy_engine.api facade 调用
     if not use_mock and db is not None:
-        from strategy_engine.service import run_backtest as real_run_backtest
-        return await real_run_backtest(
+        from strategy_engine.api import simulate
+
+        return await simulate(
             db=db,
-            stock_code=stock_code,
             strategy_id=strategy_id,
+            stock_code=stock_code,
             account_id=account_id,
             timeframe=timeframe,
             start_date=start_date,

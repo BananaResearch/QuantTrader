@@ -93,8 +93,18 @@ cd backend && uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 | /api/account/orders | GET | 模块2 | 订单列表 |
 | /api/account/order | POST | 模块2 | 下单 |
 | /api/strategy/list | GET | 模块3 | 策略列表 |
-| /api/strategy/create | POST | 模块3 | 创建策略 |
-| /api/strategy/{id} | GET | 模块3 | 策略详情 |
+| /api/strategy/create | POST | 模块3 | 创建策略（无 strategy_type 字段） |
+| /api/strategy/{id} | GET | 模块3 | 策略详情（无 strategy_type） |
+| /api/strategy/{id} | PUT | 模块3 | 更新策略（无 strategy_type） |
+| /api/strategy/{id} | DELETE | 模块3 | 删除策略 |
+| /api/strategy/options/all | GET | 模块3 | 简化列表（无 strategy_type） |
+| /api/strategy/{id}/dry-run | POST | 模块3 | 试运行（签名已变更：template_id + override） |
+| /api/strategy/runtime-configs | GET | 模块3 | 运行配置模板列表 |
+| /api/strategy/runtime-configs | POST | 模块3 | 创建运行配置模板 |
+| /api/strategy/runtime-configs/{id} | GET | 模块3 | 运行配置模板详情 |
+| /api/strategy/runtime-configs/{id} | PUT | 模块3 | 更新运行配置模板（系统预设禁止） |
+| /api/strategy/runtime-configs/{id} | DELETE | 模块3 | 删除运行配置模板（系统预设禁止） |
+| /api/strategy/templates | GET | 模块3 | 内置策略模板列表（double_ma/bollinger/macd/rsi/blank） |
 | /api/execution/status | GET | 模块4 | 执行状态 |
 | /api/execution/risk-alerts | GET | 模块4 | 风控告警 |
 | /api/execution/logs | GET | 模块4 | 执行日志 |

@@ -71,16 +71,6 @@ class TestStrategyCRUD:
             assert strategy["status"] == "active"
 
     @pytest.mark.asyncio
-    async def test_list_strategies_with_type_filter(self, client):
-        """GET /api/strategy/list?strategy_type=trend 过滤 trend 策略"""
-        response = await client.get("/api/strategy/list?strategy_type=trend")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
-        for strategy in data["data"]:
-            assert strategy["strategy_type"] == "trend"
-
-    @pytest.mark.asyncio
     async def test_list_strategies_with_pagination(self, client):
         """GET /api/strategy/list?limit=2&offset=0 分页"""
         response = await client.get("/api/strategy/list?limit=2&offset=0")
@@ -95,7 +85,6 @@ class TestStrategyCRUD:
         payload = {
             "code": "TEST_CREATE_001",
             "name": "测试创建策略",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
             "code_content": "def initialize(context):\n    pass\n\ndef handle_data(context, data):\n    pass",
@@ -118,7 +107,6 @@ class TestStrategyCRUD:
         payload = {
             "code": "TEST_DUP_001",
             "name": "测试重复策略",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
             "code_content": "def initialize(context):\n    pass\n\ndef handle_data(context, data):\n    pass",
@@ -160,7 +148,6 @@ class TestStrategyCRUD:
         payload = {
             "code": "TEST_UPDATE_001",
             "name": "测试更新策略",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
             "code_content": "def initialize(context):\n    pass\n\ndef handle_data(context, data):\n    pass",
@@ -199,7 +186,6 @@ class TestStrategyCRUD:
         payload = {
             "code": "TEST_DELETE_001",
             "name": "测试删除策略",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
             "code_content": "def initialize(context):\n    pass\n\ndef handle_data(context, data):\n    pass",
@@ -298,7 +284,7 @@ class TestStrategyOptions:
         for option in data["data"]:
             assert "id" in option
             assert "name" in option
-            assert "strategy_type" in option
+            assert "strategy_type" not in option  # strategy_type 已删除
 
     @pytest.mark.asyncio
     async def test_options_all_with_status_all(self, client):
@@ -344,7 +330,6 @@ class TestStrategyVersions:
         payload = {
             "code": "TEST_VERSION_001",
             "name": "测试版本策略",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
             "code_content": "def initialize(context):\n    pass\n\ndef handle_data(context, data):\n    pass",
@@ -389,7 +374,6 @@ class TestStrategyVersions:
         payload = {
             "code": "TEST_VERSION_DUP",
             "name": "测试版本重复",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
             "code_content": "def initialize(context):\n    pass\n\ndef handle_data(context, data):\n    pass",
@@ -425,7 +409,6 @@ class TestEmptyCodeContent:
         payload = {
             "code": "TEST_EMPTY_CODE",
             "name": "空代码策略",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
             "code_content": "",
@@ -440,7 +423,6 @@ class TestEmptyCodeContent:
         payload = {
             "code": "TEST_NULL_CODE",
             "name": "空代码策略2",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
         }
@@ -454,7 +436,6 @@ class TestEmptyCodeContent:
         payload = {
             "code": "TEST_SPACE_CODE",
             "name": "空白代码策略",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
             "code_content": "   \n\t  ",
@@ -465,7 +446,7 @@ class TestEmptyCodeContent:
 
 
 class TestDryRunEdgeCases:
-    """4.4 & 2.5: dry-run 边界场景测试"""
+    """dry-run 边界场景测试（strategy-engine-params-redesign 新签名）。"""
 
     @pytest.mark.asyncio
     async def test_dry_run_strategy_not_active(self, client):
@@ -473,7 +454,6 @@ class TestDryRunEdgeCases:
         payload = {
             "code": "TEST_DRYRUN_DRAFT",
             "name": "试运行草稿策略",
-            "strategy_type": "trend",
             "status": "draft",
             "version": "1.0.0",
             "code_content": "def initialize(context):\n    pass\n\ndef handle_data(context, data):\n    pass",
@@ -483,9 +463,7 @@ class TestDryRunEdgeCases:
         strategy_id = create_response.json()["data"]["id"]
 
         dry_run_payload = {
-            "stock_code": "000001.SZ",
-            "start_date": "2024-01-01",
-            "end_date": "2024-01-31",
+            "template_id": 1,
             "max_bars": 30,
         }
         response = await client.post(
@@ -498,17 +476,25 @@ class TestDryRunEdgeCases:
 
     @pytest.mark.asyncio
     async def test_dry_run_max_bars_exceeds_limit(self, client):
-        """POST /api/strategy/{id}/dry-run 且 max_bars=200 返回 422"""
+        """POST /api/strategy/{id}/dry-run 且 max_bars=2000 返回 422（上限 1000）。"""
         dry_run_payload = {
-            "stock_code": "000001.SZ",
-            "start_date": "2024-01-01",
-            "end_date": "2024-01-31",
-            "max_bars": 200,
+            "template_id": 1,
+            "max_bars": 2000,
         }
         response = await client.post(
             "/api/strategy/1/dry-run", json=dry_run_payload
         )
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_dry_run_template_not_found(self, client):
+        """template_id 不存在返回 404。"""
+        dry_run_payload = {
+            "template_id": 99999,
+            "max_bars": 10,
+        }
+        response = await client.post("/api/strategy/1/dry-run", json=dry_run_payload)
+        assert response.status_code == 404
 
 
 class TestReloadStrategy:
@@ -527,7 +513,6 @@ class TestReloadStrategy:
         payload = {
             "code": "RELOAD_DRAFT",
             "name": "reload草稿策略",
-            "strategy_type": "trend",
             "status": "draft",
             "code_content": "def initialize(c): pass\ndef handle_data(c, d): pass",
         }
@@ -545,7 +530,6 @@ class TestReloadStrategy:
         payload = {
             "code": "RELOAD_EMPTY",
             "name": "reload空代码策略",
-            "strategy_type": "trend",
             "status": "active",
             "code_content": "def initialize(c): pass\ndef handle_data(c, d): pass",
         }

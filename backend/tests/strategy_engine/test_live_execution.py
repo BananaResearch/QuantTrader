@@ -89,7 +89,6 @@ async def test_load_strategy_not_active(test_client, test_db):
     strategy = await repo.create({
         "code": "TEST_DRAFT",
         "name": "测试草稿策略",
-        "strategy_type": "trend",
         "status": "draft",
         "code_content": "def initialize(context): pass\ndef handle_data(context, data): pass",
     })
@@ -138,7 +137,6 @@ async def test_reload_route_invalid_code(test_client, test_db):
     strategy = await repo.create({
         "code": "TEST_INVALID",
         "name": "测试无效代码",
-        "strategy_type": "trend",
         "status": "active",
         "code_content": "def invalid_syntax(",  # 语法错误
     })

@@ -72,6 +72,80 @@ class StrategyTimeoutError(BacktestError):
     http_status = 500
 
 
+# ============================================================
+# strategy-engine-params-redesign 新增异常
+# ============================================================
+
+class RuntimeConfigError(BacktestError):
+    """运行配置相关异常基类。"""
+
+    code = "RUNTIME_CONFIG_ERROR"
+    http_status = 400
+
+
+class RuntimeConfigNotFound(RuntimeConfigError):
+    """运行配置模板不存在。"""
+
+    code = "RUNTIME_CONFIG_NOT_FOUND"
+    http_status = 404
+
+
+class InvalidOverrideField(RuntimeConfigError):
+    """不允许覆盖的字段。"""
+
+    code = "INVALID_OVERRIDE_FIELD"
+    http_status = 400
+
+
+class RuntimeConfigNameDuplicated(RuntimeConfigError):
+    """模板名称重复。"""
+
+    code = "RUNTIME_CONFIG_NAME_DUPLICATED"
+    http_status = 400
+
+
+class RuntimeConfigDefaultForbidden(RuntimeConfigError):
+    """系统预设模板禁止操作。"""
+
+    code = "RUNTIME_CONFIG_DEFAULT_FORBIDDEN"
+    http_status = 400
+
+
+class RuntimeConfigDateRequired(RuntimeConfigError):
+    """backtest 模式必须提供日期范围。"""
+
+    code = "RUNTIME_CONFIG_DATE_REQUIRED"
+    http_status = 400
+
+
+class RuntimeConfigDateInvalid(RuntimeConfigError):
+    """日期逻辑错误。"""
+
+    code = "RUNTIME_CONFIG_DATE_INVALID"
+    http_status = 400
+
+
+class InvalidParamValue(BacktestError):
+    """参数值校验失败（与 Schema 不匹配）。"""
+
+    code = "INVALID_PARAM_VALUE"
+    http_status = 400
+
+
+class StrategyCodeDuplicated(BacktestError):
+    """策略编码重复（code 唯一冲突）。"""
+
+    code = "STRATEGY_CODE_DUPLICATED"
+    http_status = 400
+
+
+class DryRunError(BacktestError):
+    """试运行失败。"""
+
+    code = "DRY_RUN_ERROR"
+    http_status = 500
+
+
 __all__ = [
     "BacktestError",
     "StrategyNotFound",
@@ -81,4 +155,15 @@ __all__ = [
     "DataUnavailableError",
     "StrategyRuntimeError",
     "StrategyTimeoutError",
+    # 新增
+    "RuntimeConfigError",
+    "RuntimeConfigNotFound",
+    "InvalidOverrideField",
+    "RuntimeConfigNameDuplicated",
+    "RuntimeConfigDefaultForbidden",
+    "RuntimeConfigDateRequired",
+    "RuntimeConfigDateInvalid",
+    "InvalidParamValue",
+    "StrategyCodeDuplicated",
+    "DryRunError",
 ]

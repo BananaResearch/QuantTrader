@@ -505,8 +505,8 @@ async def list_strategies(db=None) -> list[StrategyOption]:
     业务角度：
         - 回测的核心是"用历史数据验证策略"，用户必须选择一个策略才能启动回测。
           策略列表让用户看到系统中有哪些可用的量化策略及其简要描述。
-        - 默认查询 strategy_engine DB（仅 status='active'），env USE_MOCK_STRATEGY=true
-          时回退到 4 个硬编码 mock。
+        - 默认通过 strategy_engine facade 查询 active 策略；
+          env USE_MOCK_STRATEGY=true 或无 db 时回退到 4 个硬编码 mock。
 
     参数：
         db: Optional[AsyncSession]。传入则查 DB；不传则返回 mock。
@@ -526,18 +526,18 @@ async def list_strategies(db=None) -> list[StrategyOption]:
             StrategyOption(id=4, name="MACD金叉死叉", description="MACD金叉买入，死叉卖出"),
         ]
 
-    # 2. 默认查 DB（仅 active 策略）
+    # 2. 默认通过 strategy_engine.api facade 查询 active 策略
     try:
-        from strategy_engine.repository import StrategyRepository
-        repo = StrategyRepository(db)
-        strategies = await repo.list_options(status="active")
+        from strategy_engine.api import list_active_strategies
+
+        summaries = await list_active_strategies(db)
         return [
             StrategyOption(
                 id=s.id,
                 name=s.name,
-                description=s.description or "",
+                description=s.description,
             )
-            for s in strategies
+            for s in summaries
         ]
     except Exception:
         # DB 不可用时回退到 mock，避免服务挂掉

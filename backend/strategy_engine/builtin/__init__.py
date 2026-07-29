@@ -1,27 +1,69 @@
 """内置策略集合。
 
-每个文件导出常量 STRATEGY_CODE（Python 源码字符串），用于：
-1. 数据库迁移 INSERT 到 strategy.code_content
-2. 单元测试加载
-3. 文档参考
+变更说明（strategy-engine-params-redesign）：
+- 每个模块新增 PARAM_SCHEMA（参数 Schema 定义）和 DEFAULT_PARAMETERS（默认参数值）
+- 新增 STRATEGY_NAME / STRATEGY_CODE_NAME 常量
 
-策略代码规则（与 strategy-dsl-runtime spec 一致）：
-- 必须定义 initialize(context) 与 handle_data(context, data)
-- 可选定义 before_trading_start(context) / control_risk(context)
-- 允许使用的全局：g / log / context / data / order / order_value / order_target /
-                  order_target_value / get_history / set_universe / get_current_data
-- 允许 import：math / statistics / datetime / decimal / json / collections
-- 禁用：open / eval / exec / __import__ / os / sys 等
+每个文件导出常量：
+- STRATEGY_NAME：展示名称
+- STRATEGY_CODE_NAME：代码名称
+- STRATEGY_CODE：Python 源码字符串
+- PARAM_SCHEMA：参数 Schema 定义（dict）
+- DEFAULT_PARAMETERS：默认参数值（dict）
 """
 
-from strategy_engine.builtin.double_ma import STRATEGY_CODE as DOUBLE_MA_CODE
-from strategy_engine.builtin.rsi import STRATEGY_CODE as RSI_CODE
-from strategy_engine.builtin.bollinger import STRATEGY_CODE as BOLLINGER_CODE
-from strategy_engine.builtin.macd import STRATEGY_CODE as MACD_CODE
+from strategy_engine.builtin.bollinger import (
+    PARAM_SCHEMA as BOLLINGER_PARAM_SCHEMA,
+    STRATEGY_CODE as BOLLINGER_CODE,
+    STRATEGY_CODE_NAME as BOLLINGER_CODE_NAME,
+    STRATEGY_NAME as BOLLINGER_NAME,
+    DEFAULT_PARAMETERS as BOLLINGER_DEFAULT_PARAMETERS,
+)
+from strategy_engine.builtin.double_ma import (
+    PARAM_SCHEMA as DOUBLE_MA_PARAM_SCHEMA,
+    STRATEGY_CODE as DOUBLE_MA_CODE,
+    STRATEGY_CODE_NAME as DOUBLE_MA_CODE_NAME,
+    STRATEGY_NAME as DOUBLE_MA_NAME,
+    DEFAULT_PARAMETERS as DOUBLE_MA_DEFAULT_PARAMETERS,
+)
+from strategy_engine.builtin.macd import (
+    PARAM_SCHEMA as MACD_PARAM_SCHEMA,
+    STRATEGY_CODE as MACD_CODE,
+    STRATEGY_CODE_NAME as MACD_CODE_NAME,
+    STRATEGY_NAME as MACD_NAME,
+    DEFAULT_PARAMETERS as MACD_DEFAULT_PARAMETERS,
+)
+from strategy_engine.builtin.rsi import (
+    PARAM_SCHEMA as RSI_PARAM_SCHEMA,
+    STRATEGY_CODE as RSI_CODE,
+    STRATEGY_CODE_NAME as RSI_CODE_NAME,
+    STRATEGY_NAME as RSI_NAME,
+    DEFAULT_PARAMETERS as RSI_DEFAULT_PARAMETERS,
+)
 
 __all__ = [
+    # 代码
     "DOUBLE_MA_CODE",
     "RSI_CODE",
     "BOLLINGER_CODE",
     "MACD_CODE",
+    # 名称
+    "DOUBLE_MA_NAME",
+    "RSI_NAME",
+    "BOLLINGER_NAME",
+    "MACD_NAME",
+    "DOUBLE_MA_CODE_NAME",
+    "RSI_CODE_NAME",
+    "BOLLINGER_CODE_NAME",
+    "MACD_CODE_NAME",
+    # Schema
+    "DOUBLE_MA_PARAM_SCHEMA",
+    "RSI_PARAM_SCHEMA",
+    "BOLLINGER_PARAM_SCHEMA",
+    "MACD_PARAM_SCHEMA",
+    # 默认参数
+    "DOUBLE_MA_DEFAULT_PARAMETERS",
+    "RSI_DEFAULT_PARAMETERS",
+    "BOLLINGER_DEFAULT_PARAMETERS",
+    "MACD_DEFAULT_PARAMETERS",
 ]

@@ -1,13 +1,11 @@
 /**
- * 策略列表页（P1 MVP）。
+ * 策略列表页。
  *
  * 功能：
- * - 表格展示全部策略（含 4 个内置）
+ * - 表格展示全部策略
  * - 状态过滤下拉（全部 / 草稿 / 已启用 / 已归档）
- * - 类型过滤下拉（全部 / 趋势 / 均值回归 / 套利 / 情绪）
  * - 顶部"刷新" + "新建策略"按钮
  * - 每行操作：试运行 / 编辑 / 删除（删除需二次确认）
- * - 删除确认弹窗（确认后级联删除历史版本）
  *
  * 路由：/strategies
  */
@@ -24,7 +22,7 @@ import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { deleteStrategy } from '../api/strategy'
-import { StrategyTable, TYPE_LABELS } from '../components/StrategyTable'
+import { StrategyTable } from '../components/StrategyTable'
 import { useStrategies } from '../hooks/useStrategies'
 import type { Strategy, StrategyStatus } from '../types/strategy'
 
@@ -33,11 +31,6 @@ const STATUS_OPTIONS: Array<{ value: StrategyStatus | 'all'; label: string }> = 
   { value: 'draft', label: '草稿' },
   { value: 'active', label: '已启用' },
   { value: 'archived', label: '已归档' },
-]
-
-const TYPE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: '', label: '全部类型' },
-  ...Object.entries(TYPE_LABELS).map(([value, label]) => ({ value, label })),
 ]
 
 const selectClass =
@@ -55,7 +48,6 @@ export default function Strategies() {
     statusFilter,
   } = useStrategies({ limit: 100 })
 
-  const [typeFilter, setTypeFilter] = useState<string>('')
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; msg: string } | null>(
     null,
@@ -113,10 +105,8 @@ export default function Strategies() {
     navigate('/strategy-editor?new=1')
   }, [navigate])
 
-  // 应用类型过滤（前端过滤；status 走 hook 后端过滤）
-  const visibleStrategies = typeFilter
-    ? strategies.filter((s) => s.strategy_type === typeFilter)
-    : strategies
+  // 应用状态过滤（由 hook 后端过滤），前端不再按 strategy_type 过滤
+  const visibleStrategies = strategies
 
   return (
     <AppLayout>
@@ -161,19 +151,9 @@ export default function Strategies() {
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as StrategyStatus | 'all')}
             className={selectClass}
+            aria-label="按状态筛选策略"
           >
             {STATUS_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          <select
-            value={typeFilter}
-            onChange={(e) => setTypeFilter(e.target.value)}
-            className={selectClass}
-          >
-            {TYPE_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
@@ -247,13 +227,16 @@ export default function Strategies() {
 
       {/* Toast */}
       {toast && (
-        <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-md shadow-float text-sm flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2"
-          style={{
-            backgroundColor:
-              toast.type === 'success' ? 'rgba(34,197,94,0.15)' : toast.type === 'error' ? 'rgba(239,68,68,0.15)' : 'rgba(59,130,246,0.15)',
-            color: toast.type === 'success' ? '#22c55e' : toast.type === 'error' ? '#ef4444' : '#3b82f6',
-            border: '1px solid currentColor',
-          }}
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-md shadow-float text-sm flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 border ${
+            toast.type === 'success'
+              ? 'bg-success/15 text-success border-success/30'
+              : toast.type === 'error'
+                ? 'bg-error/15 text-error border-error/30'
+                : 'bg-primary/15 text-primary border-primary/30'
+          }`}
         >
           {toast.msg}
         </div>
